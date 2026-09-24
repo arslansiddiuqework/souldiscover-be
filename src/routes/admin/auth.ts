@@ -31,7 +31,7 @@ router.post("/login", async (req: Request, res: Response) => {
       return res.status(400).json({ message: "Email and password are required." });
     }
 
-    const admin = await Adnpmmin.findOne({ email: email.toLowerCase() });
+    const admin = await Admin.findOne({ email: email.toLowerCase() });
     if (!admin) {
       return res.status(401).json({ message: "Invalid email or password." });
     }
