@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+
+# Logs
+*.log
+logs/
+debug.log
+*.tmp
+npm-debug.log*
+yarn-debug.log*
+
+# Caches
+*.cache
+.vercel/
+
+# Build output
+dist/
+build/
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+*.tsbuildinfo
+.vscode/
+.idea/
+
+# Coverage
+coverage/
+
+# Databases
+*.sqlite
+*.db
