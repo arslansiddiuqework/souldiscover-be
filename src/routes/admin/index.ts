@@ -13,6 +13,9 @@ import emergencyRouter from "./emergency";
 import analyticsRouter from "./analytics";
 import logsRouter from "./logs";
 import settingsRouter from "./settings";
+import wellnessRouter from "./wellness";
+import consultationsRouter from "./consultations";
+import assessmentsRouter from "./assessments";
 
 const router = Router();
 
@@ -23,5 +26,8 @@ router.use("/emergency", emergencyRouter);
 router.use("/analytics", analyticsRouter);
 router.use("/logs", logsRouter);
 router.use("/settings", settingsRouter);
+router.use("/wellness", wellnessRouter);
+router.use("/consultations", consultationsRouter);
+router.use("/assessments", assessmentsRouter);
 
 export default router;

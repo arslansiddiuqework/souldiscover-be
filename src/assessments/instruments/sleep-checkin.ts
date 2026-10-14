@@ -1,0 +1,156 @@
+import { AssessmentDefinition } from "../types";
+
+const OPTIONS = [
+  { id: "never", label: "Never", value: 0 },
+  { id: "rarely", label: "Rarely", value: 1 },
+  { id: "sometimes", label: "Sometimes", value: 2 },
+  { id: "often", label: "Often", value: 3 },
+  { id: "almost_always", label: "Almost always", value: 4 },
+];
+
+/** Original Soul Discovery non-diagnostic sleep check-in. */
+export const sleepCheckIn: AssessmentDefinition = {
+  id: "sleep-rest-check-in",
+  slug: "sleep-rest-check-in",
+  version: "1.0.0",
+  title: "Sleep and Rest Check-In",
+  shortDescription:
+    "Explore sleep routines, perceived restfulness, and factors that may be affecting rest.",
+  longDescription:
+    "A gentle reflection on how rested you have felt recently. This check-in does not diagnose a sleep disorder and does not replace medical advice about sleep problems.",
+  category: "focus_functioning",
+  typeBadge: "check_in",
+  estimatedMinutes: 4,
+  audience: "Adults (18+)",
+  ageMin: 18,
+  referencePeriod: "Over the past seven days.",
+  privacyNote: "Your answers are personal and optional to save.",
+  status: "published",
+  clinicallyValidated: false,
+  requiresAcknowledgment: true,
+  questionCount: 5,
+  questions: [
+    {
+      id: "restfulness",
+      text: "How often have you felt rested after sleeping?",
+      required: false,
+      allowSkip: true,
+      responseType: "single",
+      options: OPTIONS,
+      domain: "rest",
+    },
+    {
+      id: "falling_asleep",
+      text: "How often have you found it difficult to fall asleep when you wanted to?",
+      required: false,
+      allowSkip: true,
+      responseType: "single",
+      options: OPTIONS,
+      domain: "rest",
+    },
+    {
+      id: "daytime_energy",
+      text: "How often has poor rest affected your daytime energy?",
+      required: false,
+      allowSkip: true,
+      responseType: "single",
+      options: OPTIONS,
+      domain: "energy",
+    },
+    {
+      id: "wind_down",
+      text: "How often have you had a calming wind-down routine before bed?",
+      required: false,
+      allowSkip: true,
+      responseType: "single",
+      options: OPTIONS,
+      domain: "self_kindness",
+    },
+    {
+      id: "night_worry",
+      text: "How often have racing thoughts kept you awake at night?",
+      required: false,
+      allowSkip: true,
+      responseType: "single",
+      options: OPTIONS,
+      domain: "stress",
+    },
+  ],
+  scoringMethod: "reflection_domains",
+  reflectionDomains: [
+    {
+      domain: "rest",
+      questionIds: ["restfulness"],
+      polarity: "positive",
+      attentionThreshold: 1.5,
+      goingWellThreshold: 2.5,
+    },
+    {
+      domain: "rest_difficulty",
+      questionIds: ["falling_asleep"],
+      polarity: "challenge",
+      attentionThreshold: 2.5,
+      goingWellThreshold: 1.5,
+    },
+    {
+      domain: "energy",
+      questionIds: ["daytime_energy"],
+      polarity: "challenge",
+      attentionThreshold: 2.5,
+      goingWellThreshold: 1.5,
+    },
+    {
+      domain: "self_kindness",
+      questionIds: ["wind_down"],
+      polarity: "positive",
+      attentionThreshold: 1.5,
+      goingWellThreshold: 2.5,
+    },
+    {
+      domain: "stress",
+      questionIds: ["night_worry"],
+      polarity: "challenge",
+      attentionThreshold: 2.5,
+      goingWellThreshold: 1.5,
+    },
+  ],
+  license: {
+    source: "Soul Discovery — original sleep and rest check-in",
+    license: "Proprietary original content; not a clinical instrument",
+    clinicallyValidated: false,
+    notes: "Does not diagnose insomnia or any sleep disorder.",
+  },
+  whatItExplores: [
+    "Perceived restfulness",
+    "Difficulty falling asleep",
+    "Daytime energy after rest",
+    "Wind-down habits and nighttime worry",
+  ],
+  whatHappensAfter: [
+    "You receive a descriptive reflection — not a sleep diagnosis.",
+    "You can explore free sleep-support activities in your Wellness Plan.",
+  ],
+  recommendations: [
+    {
+      planSlug: "sleep-better",
+      reason: "Build a gentler bedtime routine and respond calmly to nighttime worries.",
+      domains: ["rest", "rest_difficulty", "stress"],
+    },
+    {
+      planSlug: "reduce-anxiety",
+      reason: "Calming tools when racing thoughts keep you awake.",
+      domains: ["stress"],
+    },
+    {
+      planSlug: "stress-burnout",
+      reason: "Support when poor rest and daytime pressure stack up.",
+      domains: ["energy"],
+    },
+  ],
+  primaryNextStep: {
+    label: "Explore sleep support activities",
+    href: "/wellness-plan?plan=sleep-better",
+  },
+  effectiveDate: "2026-03-26",
+  icon: "moon",
+};

@@ -17,6 +17,10 @@ import { User } from "../../models/User";
 import { ChatSession } from "../../models/ChatSession";
 import { EmergencyContact } from "../../models/EmergencyContact";
 import { EscalationLog } from "../../models/EscalationLog";
+import { Mood } from "../../models/Mood";
+import { Activity } from "../../models/Activity";
+import { WellnessPlan } from "../../models/WellnessPlan";
+import { Consultation } from "../../models/Consultation";
 import { adminAuth, requirePermission } from "../../middleware/adminAuth";
 import { logger } from "../../utils/logger";
 
@@ -108,13 +112,42 @@ router.get("/:id", requirePermission("users.read"), async (req: Request, res: Re
     const user = await User.findById(req.params.id).select("-password");
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    const [sessions, emergencyRecord, escalationLogs] = await Promise.all([
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+    const [
+      sessions,
+      emergencyRecord,
+      escalationLogs,
+      moodCount,
+      recentMoods,
+      moodAvgAgg,
+      activityCount,
+      recentActivities,
+      wellnessPlans,
+      consultations,
+    ] = await Promise.all([
       ChatSession.find({ userId: user._id })
         .select("sessionId title startTime status messages")
         .sort({ startTime: -1 })
         .limit(20),
       EmergencyContact.findOne({ userId: user._id }),
       EscalationLog.find({ userId: user._id }).sort({ createdAt: -1 }).limit(10),
+      Mood.countDocuments({ userId: user._id }),
+      Mood.find({ userId: user._id }).sort({ timestamp: -1 }).limit(7),
+      Mood.aggregate([
+        { $match: { userId: user._id, timestamp: { $gte: sevenDaysAgo } } },
+        { $group: { _id: null, avg: { $avg: "$score" }, count: { $sum: 1 } } },
+      ]),
+      Activity.countDocuments({ userId: user._id }),
+      Activity.find({ userId: user._id }).sort({ timestamp: -1 }).limit(10),
+      WellnessPlan.find({ userId: user._id })
+        .select("planId title catalogSlug status completionRate currentStreak tasksCompleted tasksTotal updatedAt")
+        .sort({ updatedAt: -1 })
+        .limit(10),
+      Consultation.find({ userId: user._id })
+        .select("bookingId psychologistName date time status paymentStatus reason createdAt")
+        .sort({ date: -1 })
+        .limit(10),
     ]);
 
     const sessionsWithCounts = sessions.map((s) => ({
@@ -141,6 +174,30 @@ router.get("/:id", requirePermission("users.read"), async (req: Request, res: Re
       consentAccepted: emergencyRecord?.consentAccepted || false,
       escalationSettings: emergencyRecord?.escalationSettings || null,
       escalationLogs,
+      mood: {
+        totalEntries: moodCount,
+        weeklyAvgScore: Math.round(moodAvgAgg[0]?.avg || 0),
+        weeklyEntries: moodAvgAgg[0]?.count || 0,
+        recent: recentMoods.map((m) => ({
+          score: m.score,
+          mood: m.mood,
+          source: m.source,
+          note: m.note,
+          timestamp: m.timestamp,
+        })),
+      },
+      activity: {
+        totalEntries: activityCount,
+        recent: recentActivities.map((a) => ({
+          type: a.type,
+          name: a.name,
+          duration: a.duration,
+          completed: a.completed,
+          timestamp: a.timestamp,
+        })),
+      },
+      wellnessPlans,
+      consultations,
     });
   } catch (error) {
     logger.error("[ADMIN_USERS] Get user detail error", { error: String(error) });
@@ -194,6 +251,10 @@ router.delete("/:id", requirePermission("users.delete"), async (req: Request, re
       ChatSession.deleteMany({ userId: user._id }),
       EmergencyContact.deleteMany({ userId: user._id }),
       EscalationLog.deleteMany({ userId: user._id }),
+      Mood.deleteMany({ userId: user._id }),
+      Activity.deleteMany({ userId: user._id }),
+      WellnessPlan.deleteMany({ userId: user._id }),
+      Consultation.deleteMany({ userId: user._id }),
     ]);
 
     logger.info("[ADMIN_USERS] User deleted", { userId: req.params.id, adminId: String(req.admin!._id) });

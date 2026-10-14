@@ -13,6 +13,8 @@ import { ChatSession } from "../../models/ChatSession";
 import { EscalationLog } from "../../models/EscalationLog";
 import { Activity } from "../../models/Activity";
 import { Mood } from "../../models/Mood";
+import { WellnessPlan } from "../../models/WellnessPlan";
+import { Consultation } from "../../models/Consultation";
 import { adminAuth, requirePermission } from "../../middleware/adminAuth";
 import { logger } from "../../utils/logger";
 
@@ -252,6 +254,41 @@ router.get("/", requirePermission("analytics.read"), async (req: Request, res: R
       { $sort: { count: -1 } },
     ]);
 
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const [
+      totalWellnessEnrollments,
+      activeWellnessPlans,
+      completedWellnessPlans,
+      wellnessAvgCompletionAgg,
+      totalConsultations,
+      scheduledConsultations,
+      completedConsultations,
+      upcomingConsultations,
+      wellnessByGoal,
+    ] = await Promise.all([
+      WellnessPlan.countDocuments(),
+      WellnessPlan.countDocuments({ status: "active" }),
+      WellnessPlan.countDocuments({ status: "completed" }),
+      WellnessPlan.aggregate([
+        { $group: { _id: null, avg: { $avg: "$completionRate" } } },
+      ]),
+      Consultation.countDocuments(),
+      Consultation.countDocuments({ status: "scheduled" }),
+      Consultation.countDocuments({ status: "completed" }),
+      Consultation.countDocuments({ status: "scheduled", date: { $gte: todayIso } }),
+      WellnessPlan.aggregate([
+        {
+          $group: {
+            _id: "$primaryGoal",
+            count: { $sum: 1 },
+            avgCompletion: { $avg: "$completionRate" },
+          },
+        },
+        { $sort: { count: -1 } },
+        { $limit: 8 },
+      ]),
+    ]);
+
     res.json({
       metrics: {
         totalUsers,
@@ -281,12 +318,21 @@ router.get("/", requirePermission("analytics.read"), async (req: Request, res: R
         needsFollowUpUsers,
         averageMoodChange,
         recoveryRate,
+        totalWellnessEnrollments,
+        activeWellnessPlans,
+        completedWellnessPlans,
+        avgWellnessCompletionRate: Math.round(wellnessAvgCompletionAgg[0]?.avg || 0),
+        totalConsultations,
+        scheduledConsultations,
+        completedConsultations,
+        upcomingConsultations,
       },
       trends: {
         usersGrowth,
         sessionsPerDay,
         emergencyTrends,
         activityBreakdown,
+        wellnessByGoal,
       },
     });
   } catch (error) {
