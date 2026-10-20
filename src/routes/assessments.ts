@@ -108,21 +108,34 @@ router.get("/history", auth, async (req: Request, res: Response) => {
     })
       .sort({ completedAt: -1 })
       .select(
-        "resultId assessmentSlug title instrumentVersion summary scoring.interpretationLabel scoring.clinicallyValidated completedAt"
+        "resultId assessmentSlug title instrumentVersion summary scoring.interpretationLabel scoring.clinicallyValidated scoring.totalScore scoring.maxScore scoring.scoringMethod completedAt"
       )
       .lean();
 
     res.json({
-      history: results.map((r) => ({
-        resultId: r.resultId,
-        assessmentSlug: r.assessmentSlug,
-        title: r.title,
-        instrumentVersion: r.instrumentVersion,
-        summary: r.summary,
-        interpretationLabel: (r.scoring as any)?.interpretationLabel ?? null,
-        clinicallyValidated: Boolean((r.scoring as any)?.clinicallyValidated),
-        completedAt: r.completedAt,
-      })),
+      history: results.map((r) => {
+        const scoring = (r.scoring || {}) as {
+          interpretationLabel?: unknown;
+          clinicallyValidated?: unknown;
+          totalScore?: unknown;
+          maxScore?: unknown;
+          scoringMethod?: unknown;
+        };
+        return {
+          resultId: r.resultId,
+          assessmentSlug: r.assessmentSlug,
+          title: r.title,
+          instrumentVersion: r.instrumentVersion,
+          summary: r.summary,
+          interpretationLabel:
+            typeof scoring.interpretationLabel === "string" ? scoring.interpretationLabel : null,
+          clinicallyValidated: Boolean(scoring.clinicallyValidated),
+          totalScore: typeof scoring.totalScore === "number" ? scoring.totalScore : null,
+          maxScore: typeof scoring.maxScore === "number" ? scoring.maxScore : null,
+          scoringMethod: typeof scoring.scoringMethod === "string" ? scoring.scoringMethod : null,
+          completedAt: r.completedAt,
+        };
+      }),
     });
   } catch (error) {
     logger.error("[ASSESSMENT] History error", { error: String(error) });
