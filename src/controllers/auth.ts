@@ -101,6 +101,19 @@ export const login = async (req: Request, res: Response) => {
     });
   } catch (error) {
     logger.error("Login error:", error);
+    const msg = error instanceof Error ? error.message : "";
+    // Surface common Atlas / serverless connection failures clearly
+    if (
+      msg.includes("buffering timed out") ||
+      msg.includes("ECONNREFUSED") ||
+      msg.includes("MongoServerSelectionError") ||
+      msg.includes("Could not connect")
+    ) {
+      return res.status(503).json({
+        message:
+          "Database unavailable. On Vercel, set MONGODB_URI to Atlas and allow Network Access (0.0.0.0/0).",
+      });
+    }
     res.status(500).json({ message: "Internal server error" });
   }
 };

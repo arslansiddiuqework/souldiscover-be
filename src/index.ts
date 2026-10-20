@@ -22,10 +22,13 @@ import musicRouter    from "./routes/music";
 import wellnessRouter from "./routes/wellness-plan";
 import consultationRouter from "./routes/consultation";
 import assessmentRouter from "./routes/assessments";
-import { connectDB }  from "./utils/db";
+import { connectDB, isDbConnected } from "./utils/db";
+import { ensureDb } from "./middleware/ensureDb";
 
 // Create Express app
 const app: any = express();
+
+const isVercel = Boolean(process.env.VERCEL);
 
 // Middleware
 app.use(helmet()); // Security headers
@@ -41,39 +44,45 @@ app.use(morgan("dev")); // HTTP request logger
 
 // Routes
 app.get("/health", (req: Request, res: Response) => {
-  res.json({ status: "ok", message: "Server is running" });
+  res.json({
+    status: "ok",
+    message: "Server is running",
+    db: isDbConnected() ? "connected" : "disconnected",
+    vercel: isVercel,
+  });
 });
 
-// API Routes
-app.use("/api/auth",      authRouter);
-app.use("/api/chat",      chatRouter);
-app.use("/api/mood",      moodRouter);
-app.use("/api/activity",  activityRouter);
-app.use("/api/user",      userRouter);
-app.use("/api/emergency", emergencyRouter);
-app.use("/api/twilio",    twilioRouter);
-app.use("/api/admin",     adminRouter);
-app.use("/api/progress",  progressRouter);
-app.use("/api/music",     musicRouter);
-app.use("/api/wellness-plan", wellnessRouter);
-app.use("/api/consultations", consultationRouter);
-app.use("/api/assessments", assessmentRouter);
+// DB-backed route groups — ensure connection on serverless cold starts
+app.use("/api/auth", ensureDb, authRouter);
+app.use("/api/chat", ensureDb, chatRouter);
+app.use("/api/mood", ensureDb, moodRouter);
+app.use("/api/activity", ensureDb, activityRouter);
+app.use("/api/user", ensureDb, userRouter);
+app.use("/api/emergency", ensureDb, emergencyRouter);
+app.use("/api/twilio", ensureDb, twilioRouter);
+app.use("/api/admin", ensureDb, adminRouter);
+app.use("/api/progress", ensureDb, progressRouter);
+app.use("/api/music", ensureDb, musicRouter);
+app.use("/api/wellness-plan", ensureDb, wellnessRouter);
+app.use("/api/consultations", ensureDb, consultationRouter);
+// Catalog endpoints are mostly in-memory; still attach DB for history/results
+app.use("/api/assessments", ensureDb, assessmentRouter);
 
 // Backward compatibility
-app.use("/auth", authRouter);
-app.use("/chat", chatRouter);
-app.use("/mood", moodRouter);
-app.use("/activity", activityRouter);
-app.use("/user", userRouter);
-app.use("/music",    musicRouter);
-app.use("/wellness-plan", wellnessRouter);
-app.use("/consultations", consultationRouter);
-app.use("/assessments", assessmentRouter);
+app.use("/auth", ensureDb, authRouter);
+app.use("/chat", ensureDb, chatRouter);
+app.use("/mood", ensureDb, moodRouter);
+app.use("/activity", ensureDb, activityRouter);
+app.use("/user", ensureDb, userRouter);
+app.use("/music", ensureDb, musicRouter);
+app.use("/wellness-plan", ensureDb, wellnessRouter);
+app.use("/consultations", ensureDb, consultationRouter);
+app.use("/assessments", ensureDb, assessmentRouter);
 
 // Error handling middleware
 app.use(errorHandler);
 
-// Start server
+// Local / traditional hosting only — never call listen() on Vercel serverless
 const startServer = async () => {
   try {
     await connectDB();
@@ -87,6 +96,14 @@ const startServer = async () => {
   }
 };
 
-startServer();
+if (!isVercel) {
+  startServer();
+} else {
+  // Warm the DB connection on cold start without crashing the function
+  void connectDB().catch((error) => {
+    logger.error("Vercel cold-start DB connect failed (will retry per request):", error);
+  });
+}
 
 module.exports = app;
+export default app;
