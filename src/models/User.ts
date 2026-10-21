@@ -11,6 +11,8 @@ export interface IUser extends Document {
   aiAvatar: string;
   aiVoice: string;
   status: "active" | "suspended";
+  /** First-time website tour dismissed or completed */
+  websiteTourCompleted: boolean;
 }
 
 const UserSchema = new Schema<IUser>(
@@ -32,6 +34,10 @@ const UserSchema = new Schema<IUser>(
       type: String, 
       enum: ["active", "suspended"], 
       default: "active" 
+    },
+    websiteTourCompleted: {
+      type: Boolean,
+      default: false,
     },
   },
   { timestamps: true }

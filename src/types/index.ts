@@ -11,6 +11,7 @@ export interface AuthUser {
   aiBehavior: string;
   aiAvatar: string;
   aiVoice?: string;
+  websiteTourCompleted?: boolean;
 }
 
 export interface MessageAnalysis {

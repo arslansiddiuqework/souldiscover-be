@@ -38,6 +38,11 @@ export const auth = async (req: Request, res: Response, next: NextFunction) => {
       aiBehavior: user.aiBehavior,
       aiAvatar: user.aiAvatar,
       aiVoice: user.aiVoice,
+      // Absent flag = legacy account (do not force the tour). Explicit false = new user.
+      websiteTourCompleted:
+        user.websiteTourCompleted === undefined
+          ? true
+          : Boolean(user.websiteTourCompleted),
     };
     next();
   } catch (error) {
