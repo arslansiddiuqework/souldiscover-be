@@ -13,10 +13,113 @@ import {
   toOverview,
 } from "../../assessments/catalog";
 import { AssessmentResult } from "../../models/AssessmentResult";
+import { AssessmentSession } from "../../models/AssessmentSession";
+import { User } from "../../models/User";
 import { logger } from "../../utils/logger";
 
 const router = Router();
 router.use(adminAuth);
+
+function scoringSummary(scoring: Record<string, unknown> | null | undefined) {
+  if (!scoring || typeof scoring !== "object") {
+    return {
+      interpretationLabel: null as string | null,
+      scoringMethod: null as string | null,
+      totalScore: null as number | null,
+      maxScore: null as number | null,
+      clinicallyValidated: false,
+    };
+  }
+  return {
+    interpretationLabel:
+      typeof scoring.interpretationLabel === "string"
+        ? scoring.interpretationLabel
+        : null,
+    scoringMethod:
+      typeof scoring.scoringMethod === "string" ? scoring.scoringMethod : null,
+    totalScore:
+      typeof scoring.totalScore === "number" ? scoring.totalScore : null,
+    maxScore: typeof scoring.maxScore === "number" ? scoring.maxScore : null,
+    clinicallyValidated: Boolean(scoring.clinicallyValidated),
+  };
+}
+
+/**
+ * Recent completions across users — metadata only (no answer payloads).
+ * Must be registered before /:slug.
+ */
+router.get(
+  "/results",
+  requirePermission("users.read"),
+  async (req: Request, res: Response) => {
+    try {
+      const page = Math.max(1, parseInt(String(req.query.page), 10) || 1);
+      const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit), 10) || 20));
+      const slug = (req.query.slug as string) || "";
+      const userId = (req.query.userId as string) || "";
+      const skip = (page - 1) * limit;
+
+      const filter: Record<string, unknown> = { saved: true };
+      if (slug) filter.assessmentSlug = slug;
+      if (userId) filter.userId = userId;
+
+      const [rows, total, inProgress, abandoned] = await Promise.all([
+        AssessmentResult.find(filter)
+          .sort({ completedAt: -1 })
+          .skip(skip)
+          .limit(limit)
+          .select(
+            "resultId userId assessmentSlug title instrumentVersion summary scoring completedAt saved"
+          )
+          .lean(),
+        AssessmentResult.countDocuments(filter),
+        AssessmentSession.countDocuments({ status: "in_progress" }),
+        AssessmentSession.countDocuments({ status: "abandoned" }),
+      ]);
+
+      const userIds = [...new Set(rows.map((r) => String(r.userId)))];
+      const users = await User.find({ _id: { $in: userIds } })
+        .select("name email")
+        .lean();
+      const userMap = new Map(users.map((u) => [String(u._id), u]));
+
+      res.json({
+        results: rows.map((r) => {
+          const user = userMap.get(String(r.userId));
+          const score = scoringSummary(r.scoring as Record<string, unknown>);
+          return {
+            resultId: r.resultId,
+            assessmentSlug: r.assessmentSlug,
+            title: r.title,
+            instrumentVersion: r.instrumentVersion,
+            summary: r.summary,
+            completedAt: r.completedAt,
+            user: user
+              ? { id: String(r.userId), name: user.name, email: user.email }
+              : { id: String(r.userId), name: "Unknown", email: "" },
+            ...score,
+          };
+        }),
+        pagination: {
+          total,
+          page,
+          limit,
+          totalPages: Math.ceil(total / limit) || 1,
+        },
+        funnel: {
+          inProgressSessions: inProgress,
+          abandonedSessions: abandoned,
+        },
+        note: "Answer payloads are omitted. Use user history in the main app for private reflection content.",
+      });
+    } catch (error) {
+      logger.error("[ADMIN_ASSESSMENTS] Results list error", {
+        error: String(error),
+      });
+      res.status(500).json({ message: "Failed to load assessment results" });
+    }
+  }
+);
 
 router.get("/", requirePermission("users.read"), async (req: Request, res: Response) => {
   try {

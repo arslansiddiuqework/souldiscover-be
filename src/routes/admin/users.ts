@@ -21,6 +21,8 @@ import { Mood } from "../../models/Mood";
 import { Activity } from "../../models/Activity";
 import { WellnessPlan } from "../../models/WellnessPlan";
 import { Consultation } from "../../models/Consultation";
+import { AssessmentResult } from "../../models/AssessmentResult";
+import { AssessmentSession } from "../../models/AssessmentSession";
 import { adminAuth, requirePermission } from "../../middleware/adminAuth";
 import { logger } from "../../utils/logger";
 
@@ -125,6 +127,9 @@ router.get("/:id", requirePermission("users.read"), async (req: Request, res: Re
       recentActivities,
       wellnessPlans,
       consultations,
+      assessmentCount,
+      recentAssessments,
+      assessmentInProgress,
     ] = await Promise.all([
       ChatSession.find({ userId: user._id })
         .select("sessionId title startTime status messages")
@@ -148,6 +153,18 @@ router.get("/:id", requirePermission("users.read"), async (req: Request, res: Re
         .select("bookingId psychologistName date time status paymentStatus reason createdAt")
         .sort({ date: -1 })
         .limit(10),
+      AssessmentResult.countDocuments({ userId: user._id, saved: true }),
+      AssessmentResult.find({ userId: user._id, saved: true })
+        .sort({ completedAt: -1 })
+        .limit(8)
+        .select(
+          "resultId assessmentSlug title instrumentVersion summary scoring completedAt"
+        )
+        .lean(),
+      AssessmentSession.countDocuments({
+        userId: user._id,
+        status: "in_progress",
+      }),
     ]);
 
     const sessionsWithCounts = sessions.map((s) => ({
@@ -198,6 +215,33 @@ router.get("/:id", requirePermission("users.read"), async (req: Request, res: Re
       },
       wellnessPlans,
       consultations,
+      assessments: {
+        totalCompletions: assessmentCount,
+        inProgressSessions: assessmentInProgress,
+        recent: recentAssessments.map((r) => {
+          const scoring = (r.scoring || {}) as Record<string, unknown>;
+          return {
+            resultId: r.resultId,
+            assessmentSlug: r.assessmentSlug,
+            title: r.title,
+            instrumentVersion: r.instrumentVersion,
+            summary: r.summary,
+            interpretationLabel:
+              typeof scoring.interpretationLabel === "string"
+                ? scoring.interpretationLabel
+                : null,
+            scoringMethod:
+              typeof scoring.scoringMethod === "string"
+                ? scoring.scoringMethod
+                : null,
+            totalScore:
+              typeof scoring.totalScore === "number" ? scoring.totalScore : null,
+            maxScore:
+              typeof scoring.maxScore === "number" ? scoring.maxScore : null,
+            completedAt: r.completedAt,
+          };
+        }),
+      },
     });
   } catch (error) {
     logger.error("[ADMIN_USERS] Get user detail error", { error: String(error) });
@@ -246,7 +290,7 @@ router.delete("/:id", requirePermission("users.delete"), async (req: Request, re
     const user = await User.findByIdAndDelete(req.params.id);
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    // Clean up related data
+    // Clean up related data (including Assessment Center records)
     await Promise.all([
       ChatSession.deleteMany({ userId: user._id }),
       EmergencyContact.deleteMany({ userId: user._id }),
@@ -255,6 +299,8 @@ router.delete("/:id", requirePermission("users.delete"), async (req: Request, re
       Activity.deleteMany({ userId: user._id }),
       WellnessPlan.deleteMany({ userId: user._id }),
       Consultation.deleteMany({ userId: user._id }),
+      AssessmentResult.deleteMany({ userId: user._id }),
+      AssessmentSession.deleteMany({ userId: user._id }),
     ]);
 
     logger.info("[ADMIN_USERS] User deleted", { userId: req.params.id, adminId: String(req.admin!._id) });

@@ -15,6 +15,8 @@ import { Activity } from "../../models/Activity";
 import { Mood } from "../../models/Mood";
 import { WellnessPlan } from "../../models/WellnessPlan";
 import { Consultation } from "../../models/Consultation";
+import { AssessmentResult } from "../../models/AssessmentResult";
+import { AssessmentSession } from "../../models/AssessmentSession";
 import { adminAuth, requirePermission } from "../../middleware/adminAuth";
 import { logger } from "../../utils/logger";
 
@@ -265,6 +267,12 @@ router.get("/", requirePermission("analytics.read"), async (req: Request, res: R
       completedConsultations,
       upcomingConsultations,
       wellnessByGoal,
+      totalAssessmentCompletions,
+      assessmentCompletionsThisWeek,
+      assessmentCompletionsThisMonth,
+      assessmentInProgress,
+      assessmentAbandoned,
+      assessmentsBySlug,
     ] = await Promise.all([
       WellnessPlan.countDocuments(),
       WellnessPlan.countDocuments({ status: "active" }),
@@ -286,6 +294,29 @@ router.get("/", requirePermission("analytics.read"), async (req: Request, res: R
         },
         { $sort: { count: -1 } },
         { $limit: 8 },
+      ]),
+      AssessmentResult.countDocuments({ saved: true }),
+      AssessmentResult.countDocuments({
+        saved: true,
+        completedAt: { $gte: sevenDaysAgo },
+      }),
+      AssessmentResult.countDocuments({
+        saved: true,
+        completedAt: { $gte: thirtyDaysAgo },
+      }),
+      AssessmentSession.countDocuments({ status: "in_progress" }),
+      AssessmentSession.countDocuments({ status: "abandoned" }),
+      AssessmentResult.aggregate([
+        { $match: { saved: true, completedAt: { $gte: thirtyDaysAgo } } },
+        {
+          $group: {
+            _id: "$assessmentSlug",
+            count: { $sum: 1 },
+            title: { $last: "$title" },
+          },
+        },
+        { $sort: { count: -1 } },
+        { $limit: 10 },
       ]),
     ]);
 
@@ -326,6 +357,11 @@ router.get("/", requirePermission("analytics.read"), async (req: Request, res: R
         scheduledConsultations,
         completedConsultations,
         upcomingConsultations,
+        totalAssessmentCompletions,
+        assessmentCompletionsThisWeek,
+        assessmentCompletionsThisMonth,
+        assessmentInProgressSessions: assessmentInProgress,
+        assessmentAbandonedSessions: assessmentAbandoned,
       },
       trends: {
         usersGrowth,
@@ -333,6 +369,11 @@ router.get("/", requirePermission("analytics.read"), async (req: Request, res: R
         emergencyTrends,
         activityBreakdown,
         wellnessByGoal,
+        assessmentsBySlug: assessmentsBySlug.map((row) => ({
+          slug: row._id,
+          title: row.title,
+          count: row.count,
+        })),
       },
     });
   } catch (error) {
