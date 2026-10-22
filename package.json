@@ -9,7 +9,8 @@
     "build": "tsc",
     "test": "ts-node src/__tests__/assessment-scoring.test.ts && ts-node src/__tests__/freesound-licence.test.ts",
     "test:assessments": "ts-node src/__tests__/assessment-scoring.test.ts",
-    "test:music": "ts-node src/__tests__/freesound-licence.test.ts"
+    "test:music": "ts-node src/__tests__/freesound-licence.test.ts",
+    "test:admin-authz": "ts-node src/__tests__/admin-authz-smoke.test.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
