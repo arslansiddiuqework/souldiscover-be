@@ -7,10 +7,11 @@
     "start": "node dist/index.js",
     "dev": "nodemon src/index.ts",
     "build": "tsc",
-    "test": "ts-node src/__tests__/assessment-scoring.test.ts && ts-node src/__tests__/freesound-licence.test.ts",
+    "test": "ts-node src/__tests__/assessment-scoring.test.ts && ts-node src/__tests__/freesound-licence.test.ts && ts-node src/__tests__/google-auth.test.ts",
     "test:assessments": "ts-node src/__tests__/assessment-scoring.test.ts",
     "test:music": "ts-node src/__tests__/freesound-licence.test.ts",
-    "test:admin-authz": "ts-node src/__tests__/admin-authz-smoke.test.ts"
+    "test:admin-authz": "ts-node src/__tests__/admin-authz-smoke.test.ts",
+    "test:google-auth": "ts-node src/__tests__/google-auth.test.ts"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

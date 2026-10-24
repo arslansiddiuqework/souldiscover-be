@@ -1,12 +1,39 @@
 import { Request, Response } from "express";
 import { sendPasswordResetEmail } from "../services/email.service";
-import { User } from "../models/User";
+import { User, IUser } from "../models/User";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { OAuth2Client } from "google-auth-library";
 import { logger } from "../utils/logger";
+import {
+  GoogleProfile,
+  resolveGoogleProfile,
+} from "../services/googleIdentity.service";
 
-const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+function serializeAuthUser(user: IUser) {
+  return {
+    _id: user._id,
+    name: user.name,
+    email: user.email,
+    profileImage: user.profileImage || "",
+    aiName: user.aiName || "",
+    aiBehavior: user.aiBehavior || "",
+    aiAvatar: user.aiAvatar || "",
+    aiVoice: user.aiVoice || "",
+    // Absent flag = legacy account (do not force the tour). Explicit false = new user.
+    websiteTourCompleted:
+      user.websiteTourCompleted === undefined
+        ? true
+        : Boolean(user.websiteTourCompleted),
+  };
+}
+
+function issueUserToken(user: IUser) {
+  return jwt.sign(
+    { userId: user._id },
+    process.env.JWT_SECRET || "your-secret-key",
+    { expiresIn: "24h" }
+  );
+}
 
 export const register = async (req: Request, res: Response) => {
   try {
@@ -75,27 +102,10 @@ export const login = async (req: Request, res: Response) => {
       return res.status(401).json({ message: "Invalid email or password." });
     }
 
-    // Generate JWT token
-    const token = jwt.sign(
-      { userId: user._id },
-      process.env.JWT_SECRET || "your-secret-key",
-      { expiresIn: "24h" }
-    );
+    const token = issueUserToken(user);
 
-
-
-    // Respond with user data and token
     res.json({
-      user: {
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        profileImage: user.profileImage || "",
-        aiName: user.aiName || "",
-        aiBehavior: user.aiBehavior || "",
-        aiAvatar: user.aiAvatar || "",
-        aiVoice: user.aiVoice || "",
-      },
+      user: serializeAuthUser(user),
       token,
       message: "Login successful",
     });
@@ -131,12 +141,20 @@ export const forgotPassword = async (req: Request, res: Response) => {
     }
 
     const user = await User.findOne({ email });
+    // Always return the same message to prevent email enumeration.
+    const okMessage = {
+      message: "If an account exists, a reset link has been sent.",
+    };
+
     if (!user) {
-      // Return a standard 200 response to prevent email enumeration attacks
-      return res.status(200).json({ message: "If an account exists, a reset link has been sent." });
+      return res.status(200).json(okMessage);
     }
 
-    // Generate a temporary reset token (expires in 15 minutes)
+    // Google-only accounts have no password — they should use Continue with Google.
+    if (!user.password) {
+      return res.status(200).json(okMessage);
+    }
+
     const resetToken = jwt.sign(
       { userId: user._id },
       process.env.JWT_SECRET || "your-secret-key",
@@ -146,10 +164,9 @@ export const forgotPassword = async (req: Request, res: Response) => {
     const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
     const resetLink = `${frontendUrl}/reset-password?token=${resetToken}`;
 
-    // Send email using the nodemailer service
     await sendPasswordResetEmail(user.email, resetLink);
 
-    res.status(200).json({ message: "If an account exists, a reset link has been sent." });
+    res.status(200).json(okMessage);
   } catch (error) {
     logger.error("Forgot password error:", error);
     res.status(500).json({ message: "Internal server error" });
@@ -193,68 +210,73 @@ export const resetPassword = async (req: Request, res: Response) => {
 
 export const googleAuth = async (req: Request, res: Response) => {
   try {
-    const { credential } = req.body;
+    const credential =
+      typeof req.body?.credential === "string"
+        ? req.body.credential.trim()
+        : typeof req.body?.access_token === "string"
+          ? req.body.access_token.trim()
+          : "";
+
     if (!credential) {
-      return res.status(400).json({ message: "Google access token is required." });
+      return res
+        .status(400)
+        .json({ message: "Google credential is required." });
     }
 
-    // Fetch user info from Google using the access token
-    const userInfoResponse = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-      headers: {
-        Authorization: `Bearer ${credential}`,
-      },
-    });
-
-    if (!userInfoResponse.ok) {
-      return res.status(400).json({ message: "Invalid Google access token." });
+    let profile: GoogleProfile;
+    try {
+      profile = await resolveGoogleProfile(credential);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Invalid Google credential.";
+      logger.warn("Google credential rejected:", message);
+      return res.status(400).json({ message });
     }
 
-    const payload = await userInfoResponse.json() as any;
-    
-    if (!payload || !payload.email) {
-      return res.status(400).json({ message: "Invalid Google token payload." });
+    if (profile.emailVerified === false) {
+      return res.status(400).json({
+        message: "Please verify your Google email address, then try again.",
+      });
     }
 
-    const { email, name, picture } = payload;
-
-    // Check if user exists
+    const email = profile.email.toLowerCase();
     let user = await User.findOne({ email });
 
     if (!user) {
-      // Create new Google user
       user = new User({
-        name: name || "Google User",
-        email: email,
+        name: profile.name || "Google User",
+        email,
         authProvider: "google",
-        profileImage: picture || "",
+        profileImage: profile.picture || "",
+        websiteTourCompleted: false,
       });
       await user.save();
     } else {
-      // If user exists but used local auth previously, we just log them in
-      // Optionally you could link accounts, but for now we proceed
       if (user.status === "suspended") {
-        return res.status(403).json({ message: "Your account is suspended. Please contact support." });
+        return res.status(403).json({
+          message: "Your account is suspended. Please contact support.",
+        });
+      }
+
+      let dirty = false;
+      // Link Google onto an existing email/password account without wiping the password.
+      if (user.authProvider !== "google" && !user.password) {
+        user.authProvider = "google";
+        dirty = true;
+      }
+      if (!user.profileImage && profile.picture) {
+        user.profileImage = profile.picture;
+        dirty = true;
+      }
+      if (dirty) {
+        await user.save();
       }
     }
 
-    // Generate our system JWT token
-    const token = jwt.sign(
-      { userId: user._id },
-      process.env.JWT_SECRET || "your-secret-key",
-      { expiresIn: "24h" }
-    );
+    const token = issueUserToken(user);
 
     res.json({
-      user: {
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        profileImage: user.profileImage || "",
-        aiName: user.aiName || "",
-        aiBehavior: user.aiBehavior || "",
-        aiAvatar: user.aiAvatar || "",
-        aiVoice: user.aiVoice || "",
-      },
+      user: serializeAuthUser(user),
       token,
       message: "Google login successful",
     });
