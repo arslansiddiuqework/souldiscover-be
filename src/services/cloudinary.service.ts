@@ -33,14 +33,25 @@ export const uploadImage = (fileBuffer: Buffer): Promise<string> => {
   });
 };
 
-const getPublicIdFromUrl = (imageUrl?: string): string | null => {
+/** Exported for security tests — validates host before deriving public_id. */
+export const getPublicIdFromUrl = (imageUrl?: string): string | null => {
   if (!imageUrl) return null;
 
   try {
     const url = new URL(imageUrl);
     const uploadIndex = url.pathname.indexOf("/upload/");
 
-    if (!url.hostname.includes("cloudinary.com") || uploadIndex === -1) {
+    // Require exact Cloudinary delivery hosts (block evil-cloudinary.com etc.)
+    const host = url.hostname.toLowerCase();
+    const isCloudinaryHost =
+      host === "res.cloudinary.com" ||
+      host.endsWith(".res.cloudinary.com") ||
+      /^[a-z0-9-]+\.cloudinary\.com$/i.test(host);
+    if (
+      url.protocol !== "https:" ||
+      !isCloudinaryHost ||
+      uploadIndex === -1
+    ) {
       return null;
     }
 

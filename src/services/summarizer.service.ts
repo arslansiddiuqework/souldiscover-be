@@ -2,7 +2,7 @@
  * Summarizer Service
  * ──────────────────
  * Generates and updates conversation summaries.
- * Uses Groq (via LLMService) to handle background tasks.
+ * Uses OpenRouter free models (via LLMService) for background tasks.
  * Fixes the old bugs:
  *   - Uses last 20 MESSAGES (not 20 characters)
  *   - Uses atomic $set update (not full document .save())
@@ -56,7 +56,7 @@ export function shouldUpdateSummary(
 
 // ── Generate & Save Summary ────────────────────────────────────
 /**
- * Generates a new summary using Groq and saves it atomically.
+ * Generates a new summary using OpenRouter and saves it atomically.
  * Uses $set to avoid the race condition that existed with .save().
  */
 export async function updateSummary(
@@ -71,7 +71,7 @@ export async function updateSummary(
 
     const prompt = buildSummarizationPrompt(conversationText, existingSummary);
 
-    logger.info("📝 Summarizer: generating summary via Groq", {
+    logger.info("Summarizer: generating summary via OpenRouter", {
       sessionId,
       inputMessages: recentForSummary.length,
     });
@@ -99,7 +99,7 @@ export async function updateSummary(
 
 // ── Generate Session Title ─────────────────────────────────────
   /**
-   * Generates a short title for the session using Groq.
+   * Generates a short title for the session using OpenRouter.
    * Returns null if generation fails (non-critical).
    */
   export async function generateTitle(

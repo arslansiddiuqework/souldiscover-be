@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { ChatSession } from "../models/ChatSession";
-import { randomUUID } from "crypto";
+import { ChatIdempotency } from "../models/ChatIdempotency";
+import { randomUUID, createHash } from "crypto";
 import { logger } from "../utils/logger";
 import { Types } from "mongoose";
 import { buildPrompt } from "../services/contextBuilder.service";
@@ -16,10 +17,15 @@ import { analyzeUserState } from "../services/emotionAI.service";
 import * as escalationEngine from "../services/crisis/escalation-engine.service";
 import { fuseEmotion, buildFusionContext } from "../services/emotionFusion.service";
 import { FusionInput } from "../services/emotionWeights";
-import { getMusicRecommendations } from "../services/spotifyRecommendation.service";
+import {
+  reserveQuota,
+  releaseQuota,
+  QuotaReservation,
+} from "../services/aiQuota.service";
 
+const MAX_MESSAGE_LENGTH = 2000;
+const DUPLICATE_WINDOW_MS = 15_000;
 
-// Default analysis fallback
 const defaultAnalysis: MessageAnalysis = {
   emotionalState: "neutral",
   themes: [],
@@ -28,7 +34,39 @@ const defaultAnalysis: MessageAnalysis = {
   progressIndicators: [],
 };
 
-// Create a new chat session
+function messageDedupeKey(
+  userId: string,
+  sessionId: string,
+  message: string
+): string {
+  const bucket = Math.floor(Date.now() / DUPLICATE_WINDOW_MS);
+  return createHash("sha256")
+    .update(`${userId}|${sessionId}|${message.trim()}|${bucket}`)
+    .digest("hex");
+}
+
+async function claimIdempotency(
+  userId: string,
+  key: string,
+  sessionId: string
+): Promise<"claimed" | "duplicate" | "error"> {
+  try {
+    await ChatIdempotency.create({
+      userId,
+      key,
+      sessionId,
+    });
+    return "claimed";
+  } catch (err: unknown) {
+    const code = (err as { code?: number })?.code;
+    if (code === 11000) return "duplicate";
+    logger.error("Idempotency claim failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return "error";
+  }
+}
+
 export const createChatSession = async (req: Request, res: Response) => {
   try {
     if (!req.user || !req.user._id) {
@@ -61,28 +99,31 @@ export const createChatSession = async (req: Request, res: Response) => {
   }
 };
 
-// Send a message and stream the AI response
 export const sendMessage = async (req: Request, res: Response) => {
+  let reservation: QuotaReservation | null = null;
+  let streamingStarted = false;
+
   try {
     const { sessionId } = req.params;
-    const { message, source } = req.body;
+    const { message, source, clientRequestId } = req.body;
     const messageSource = source === "voice" ? "voice" : "text";
     const userId = req.user._id;
     const userName = req.user.name;
-
-    // Set streaming headers
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no'); // Disable proxy buffering
 
     if (!message || typeof message !== "string") {
       return res.status(400).json({ message: "Message is required" });
     }
 
-    logger.info("Processing chat message", { sessionId, source: messageSource });
+    const trimmed = message.trim();
+    if (!trimmed) {
+      return res.status(400).json({ message: "Message cannot be empty" });
+    }
+    if (trimmed.length > MAX_MESSAGE_LENGTH) {
+      return res.status(400).json({
+        message: `Message is too long (max ${MAX_MESSAGE_LENGTH} characters)`,
+      });
+    }
 
-    // Load session and verify access
     const session = await ChatSession.findOne({ sessionId });
     if (!session) {
       logger.warn("Session not found:", { sessionId });
@@ -90,24 +131,68 @@ export const sendMessage = async (req: Request, res: Response) => {
     }
 
     if (session.userId.toString() !== userId.toString()) {
-      logger.warn("Unauthorized access attempt:", { sessionId, userId });
+      logger.warn("Unauthorized access attempt:", { sessionId, userId: String(userId) });
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    // Check if session is locked (completed or archived)
     if (session.status === "completed" || session.status === "archived") {
-      logger.warn("Attempted to message a locked session:", { sessionId, status: session.status });
-      return res.status(400).json({ message: "This session has been completed and is locked." });
+      logger.warn("Attempted to message a locked session:", {
+        sessionId,
+        status: session.status,
+      });
+      return res
+        .status(400)
+        .json({ message: "This session has been completed and is locked." });
     }
 
-    // Build context with hybrid memory
+    const idemKey =
+      typeof clientRequestId === "string" && clientRequestId.trim().length >= 8
+        ? `client:${clientRequestId.trim().slice(0, 128)}`
+        : `auto:${messageDedupeKey(userId.toString(), sessionId, trimmed)}`;
+
+    const claim = await claimIdempotency(userId.toString(), idemKey, sessionId);
+    if (claim === "duplicate") {
+      return res.status(409).json({
+        message:
+          "That message was already received. Please wait for the reply or try a new message.",
+        code: "duplicate_submission",
+      });
+    }
+    if (claim === "error") {
+      return res.status(503).json({
+        message:
+          "We're having trouble processing chat right now. Please try again shortly.",
+      });
+    }
+
+    // Reserve quota BEFORE contacting OpenRouter
+    const quota = await reserveQuota(userId.toString());
+    if (!quota.ok) {
+      return res.status(429).json({
+        message: quota.message,
+        code: `quota_${quota.reason}`,
+      });
+    }
+    reservation = quota.reservation;
+
+    // Streaming headers only after auth/quota/validation succeed
+    res.setHeader("Content-Type", "application/x-ndjson");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    streamingStarted = true;
+
+    logger.info("Processing chat message", {
+      sessionId,
+      source: messageSource,
+    });
+
     const allMessages = session.messages.map((m) => ({
       role: m.role,
       content: m.content,
     }));
     const summary = session.summary || "";
 
-    // Process recent mood data
     const latestMoodDoc = await Mood.findOne({ userId }).sort({ timestamp: -1 });
     let latestMood: "low" | "neutral" | "positive" | "unknown" = "unknown";
     if (latestMoodDoc) {
@@ -116,22 +201,26 @@ export const sendMessage = async (req: Request, res: Response) => {
       else latestMood = "neutral";
     }
 
-    const aiName = req.user.aiName || "Maya";
+    const aiName =
+      !req.user.aiName || req.user.aiName === "Maya"
+        ? "Soul Discovery"
+        : req.user.aiName;
     const aiBehavior = req.user.aiBehavior || "supportive";
 
-    // Analyze user message emotion
-    const recentContext = allMessages.slice(-3).map(m => m.content).join(" | ");
+    const recentContext = allMessages
+      .slice(-3)
+      .map((m) => m.content)
+      .join(" | ");
     const emotionMeta = await analyzeUserState({
-      userMessage: message,
+      userMessage: trimmed,
       recentMessages: recentContext,
       sessionSummary: summary,
-      latestMood
-    }).catch(err => {
+      latestMood,
+    }).catch((err) => {
       logger.warn("Emotion analysis failed in background", err);
       return null;
     });
 
-    // Calculate multimodal emotion fusion
     let fusionContextStr: string | undefined;
     try {
       const recentMoods = await Mood.find({ userId })
@@ -148,32 +237,44 @@ export const sendMessage = async (req: Request, res: Response) => {
 
       const fusionInput: FusionInput = {
         textEmotion: emotionMeta?.emotion,
-        faceScore: latestMoodDoc?.source === "camera" ? latestMoodDoc.score : undefined,
-        faceMood: latestMoodDoc?.source === "camera" ? (latestMoodDoc.mood ?? undefined) : undefined,
+        faceScore:
+          latestMoodDoc?.source === "camera" ? latestMoodDoc.score : undefined,
+        faceMood:
+          latestMoodDoc?.source === "camera"
+            ? (latestMoodDoc.mood ?? undefined)
+            : undefined,
         historyScore,
       };
 
       const fusionResult = fuseEmotion(fusionInput);
       fusionContextStr = buildFusionContext(fusionResult, fusionInput);
 
-      logger.info("🔀 Emotion Fusion", {
+      logger.info("Emotion Fusion", {
         score: fusionResult.score,
         mood: fusionResult.mood,
         confidence: fusionResult.confidence,
         mismatch: fusionResult.mismatch,
         sources: fusionResult.sources,
       });
-
-
     } catch (err) {
       logger.warn("Emotion fusion failed, continuing without", {
         error: err instanceof Error ? err.message : String(err),
       });
     }
 
-    const prompt = buildPrompt(message, allMessages, summary, userName, latestMood, aiName, aiBehavior, emotionMeta?.suggestedActivity, fusionContextStr);
+    // Chat stays conversation-only — never inject activity / mini-game prompts.
+    const prompt = buildPrompt(
+      trimmed,
+      allMessages,
+      summary,
+      userName,
+      latestMood,
+      aiName,
+      aiBehavior,
+      null,
+      fusionContextStr
+    );
 
-    // Handle client disconnects safely
     const abortController = new AbortController();
     req.on("close", () => {
       if (!res.writableEnded) {
@@ -182,9 +283,13 @@ export const sendMessage = async (req: Request, res: Response) => {
       }
     });
 
-    // Generate and stream the AI response
-    // This starts streaming immediately to res
-    const { fullText, modelUsed, fallbackUsed, error: llmError } = await routedGenerateStream(
+    const {
+      fullText,
+      modelUsed,
+      fallbackUsed,
+      error: llmError,
+      errorCode,
+    } = await routedGenerateStream(
       prompt,
       (chunk) => {
         if (!res.writableEnded) {
@@ -198,51 +303,34 @@ export const sendMessage = async (req: Request, res: Response) => {
       abortController.signal
     );
 
+    // Provider failed without a usable reply — release reservation
+    if (llmError) {
+      await releaseQuota(reservation);
+      reservation = null;
+    }
+
     const reply = fullText.trim();
 
-    logger.info("Generated response successfully", {
+    logger.info("Generated response", {
       sessionId,
       modelUsed,
       fallbackUsed,
       replyLength: reply.length,
+      error: Boolean(llmError),
+      errorCode,
     });
 
-    // Evaluate crisis escalation (async, never blocks chat)
-    if (emotionMeta) {
+    if (emotionMeta && !llmError) {
       void escalationEngine.evaluate(
         userId.toString(),
         sessionId,
         userName || "User",
         emotionMeta,
-        message
+        trimmed
       );
     }
 
-    // Fetch Spotify recommendations if the AI decided to recommend music
-    let spotifyRecommendations: any[] = [];
-    if (emotionMeta && emotionMeta.musicRecommendation) {
-      logger.info(`🎵 Fetching Spotify recommendations for mood: "${emotionMeta.musicRecommendation.mood}"`);
-      spotifyRecommendations = await getMusicRecommendations(emotionMeta.musicRecommendation.mood);
-      logger.info(`🎵 Spotify result: ${spotifyRecommendations.length} playlists returned`);
-
-      if (spotifyRecommendations.length > 0) {
-        try {
-          const { Activity } = require("../models/Activity");
-          await Activity.create({
-            userId,
-            type: "music",
-            name: `Spotify Recommendation: ${emotionMeta.musicRecommendation.mood}`,
-            description: spotifyRecommendations[0]?.title || "Playlist",
-            completed: true,
-            timestamp: new Date()
-          });
-        } catch (actErr) {
-          logger.error("Failed to log music activity", { error: actErr });
-        }
-      }
-    }
-
-    // Save user and AI messages atomically
+    // Persist only when we have a non-error reply (or soft error message already streamed)
     const updatedSession = await ChatSession.findOneAndUpdate(
       { sessionId, userId },
       {
@@ -251,10 +339,12 @@ export const sendMessage = async (req: Request, res: Response) => {
             $each: [
               {
                 role: "user",
-                content: message,
+                content: trimmed,
                 timestamp: new Date(),
                 metadata: {
-                  emotionMeta,
+                  emotionMeta: emotionMeta
+                    ? { ...emotionMeta, suggestedActivity: null, musicRecommendation: null }
+                    : emotionMeta,
                   source: messageSource,
                 },
               },
@@ -270,8 +360,9 @@ export const sendMessage = async (req: Request, res: Response) => {
                     emotionalState: defaultAnalysis.emotionalState,
                     riskLevel: defaultAnalysis.riskLevel,
                   },
-                  emotionMeta,
-                  spotifyRecommendations: spotifyRecommendations.length > 0 ? spotifyRecommendations : undefined,
+                  emotionMeta: emotionMeta
+                    ? { ...emotionMeta, suggestedActivity: null, musicRecommendation: null }
+                    : emotionMeta,
                   source: messageSource,
                 },
               },
@@ -282,19 +373,18 @@ export const sendMessage = async (req: Request, res: Response) => {
       { new: true }
     );
 
-    if (updatedSession) {
+    if (updatedSession && !llmError) {
       logger.info("Session updated atomically", {
         sessionId,
         messageCount: updatedSession.messages.length,
       });
 
-      // Generate session title in background
       const isDefaultTitle =
         updatedSession.title === "New Session" ||
         updatedSession.title === "New Therapy Session";
 
       if (updatedSession.messages.length >= 2 && isDefaultTitle) {
-        generateTitle(message, reply)
+        generateTitle(trimmed, reply)
           .then((title) => {
             if (title && title.length > 2) {
               ChatSession.updateOne({ sessionId }, { $set: { title } }).catch(
@@ -305,7 +395,6 @@ export const sendMessage = async (req: Request, res: Response) => {
           .catch((err) => logger.error("Title generation error", err));
       }
 
-      // Update session summary in background
       const msgCount = updatedSession.messages.length;
       const hasSummary = !!updatedSession.summary;
 
@@ -323,42 +412,74 @@ export const sendMessage = async (req: Request, res: Response) => {
       }
     }
 
-    // Send final completion event to stream
-    res.write(
-      JSON.stringify({
-        t: "done",
-        analysis: defaultAnalysis,
-        modelUsed,
-        fallbackUsed,
-        error: llmError,
-        metadata: {
-          progress: {
-            emotionalState: defaultAnalysis.emotionalState,
-            riskLevel: defaultAnalysis.riskLevel,
+    if (!res.writableEnded) {
+      res.write(
+        JSON.stringify({
+          t: "done",
+          analysis: defaultAnalysis,
+          modelUsed,
+          fallbackUsed,
+          error: llmError,
+          errorCode,
+          metadata: {
+            progress: {
+              emotionalState: defaultAnalysis.emotionalState,
+              riskLevel: defaultAnalysis.riskLevel,
+            },
+            emotionMeta: emotionMeta
+              ? { ...emotionMeta, suggestedActivity: null, musicRecommendation: null }
+              : emotionMeta,
           },
-          emotionMeta,
-          spotifyRecommendations: spotifyRecommendations.length > 0 ? spotifyRecommendations : undefined,
-        },
-      }) + "\n"
-    );
-    res.end();
+        }) + "\n"
+      );
+      res.end();
+    }
     logger.info("Response stream completed", { sessionId });
   } catch (error) {
-    logger.error("Error in sendMessage:", error);
-    if (!res.headersSent) {
+    logger.error("Error in sendMessage:", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+
+    if (reservation) {
+      await releaseQuota(reservation);
+      reservation = null;
+    }
+
+    if (!streamingStarted && !res.headersSent) {
       res.status(500).json({ message: "Internal server error" });
+      return;
+    }
+
+    if (!res.writableEnded) {
+      try {
+        res.write(
+          JSON.stringify({
+            t: "done",
+            error: true,
+            errorCode: "provider_error",
+            message:
+              "Something went wrong while generating a reply. Please try again.",
+          }) + "\n"
+        );
+        res.end();
+      } catch {
+        /* ignore */
+      }
     }
   }
 };
 
-// Get a specific chat session
 export const getChatSession = async (req: Request, res: Response) => {
   try {
     const { sessionId } = req.params;
     const userId = req.user._id;
 
     logger.info(`Getting chat session: ${sessionId}`);
-    const chatSession = await ChatSession.findOne({ sessionId, userId, status: { $ne: "archived" } });
+    const chatSession = await ChatSession.findOne({
+      sessionId,
+      userId,
+      status: { $ne: "archived" },
+    });
 
     if (!chatSession) {
       logger.warn(`Chat session not found: ${sessionId}`);
@@ -372,7 +493,6 @@ export const getChatSession = async (req: Request, res: Response) => {
   }
 };
 
-// Get history for a session
 export const getChatHistory = async (req: Request, res: Response) => {
   try {
     const { sessionId } = req.params;
@@ -382,10 +502,8 @@ export const getChatHistory = async (req: Request, res: Response) => {
       userId: userId.toString(),
     });
 
-    // 1. Try finding by UUID
     let session = await ChatSession.findOne({ sessionId });
 
-    // 2. Fallback to _id if not found and sessionId looks like an ObjectId
     if (!session && Types.ObjectId.isValid(sessionId)) {
       session = await ChatSession.findById(sessionId);
     }
@@ -394,13 +512,6 @@ export const getChatHistory = async (req: Request, res: Response) => {
       logger.warn(`Session not found in DB or is archived`, { sessionId });
       return res.status(404).json({ message: "Session not found" });
     }
-
-    logger.info(`Session found`, {
-      sessionId: session.sessionId,
-      ownerId: session.userId.toString(),
-      requestUserId: userId.toString(),
-      messagesCount: session.messages.length,
-    });
 
     if (session.userId.toString() !== userId.toString()) {
       logger.warn(`Ownership mismatch`, {
@@ -419,14 +530,13 @@ export const getChatHistory = async (req: Request, res: Response) => {
   }
 };
 
-// Get all active sessions for user
 export const getUserSessions = async (req: Request, res: Response) => {
   try {
     const userId = req.user._id;
-    const sessions = await ChatSession.find({ 
+    const sessions = await ChatSession.find({
       userId,
       status: { $ne: "archived" },
-      "messages.0": { $exists: true }
+      "messages.0": { $exists: true },
     })
       .select("sessionId title startTime status messages")
       .sort({ startTime: -1 });
@@ -457,7 +567,6 @@ export const getUserSessions = async (req: Request, res: Response) => {
   }
 };
 
-// Delete a chat session
 export const deleteChatSession = async (req: Request, res: Response) => {
   try {
     const { sessionId } = req.params;
@@ -465,7 +574,6 @@ export const deleteChatSession = async (req: Request, res: Response) => {
 
     logger.info(`Attempting to delete chat session: ${sessionId}`);
 
-    // Using findOneAndDelete to ensure we only delete if it belongs to the user
     const deletedSession = await ChatSession.findOneAndDelete({
       sessionId,
       userId,

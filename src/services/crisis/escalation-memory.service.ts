@@ -2,7 +2,7 @@
  * Escalation Memory Service
  * ─────────────────────────
  * Builds a condensed emergency call context from the existing session data.
- * Uses the existing Groq `generate()` function — NOT a new AI call.
+ * Uses the existing LLM `generate()` function — NOT a new AI call.
  * Sends a summarized context to the emergency call, not raw chat history.
  */
 

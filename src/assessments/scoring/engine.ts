@@ -16,6 +16,14 @@ const DOMAIN_LABELS: Record<string, string> = {
   connection: "feeling connected",
   self_kindness: "self-kindness",
   daily_functioning: "everyday functioning",
+  anger_intensity: "anger intensity and frequency",
+  anger_triggers: "noticing anger triggers",
+  anger_body: "body warning signs",
+  anger_impulse: "pausing before reacting",
+  anger_recovery: "settling after anger",
+  anger_communication: "clear, respectful communication",
+  anger_consequences: "impact of angry reactions",
+  anger_coping: "helpful coping strategies",
 };
 
 const SMALL_STEPS: Record<string, string> = {
@@ -28,6 +36,22 @@ const SMALL_STEPS: Record<string, string> = {
   connection: "Send a brief message to someone you trust.",
   self_kindness: "Speak to yourself as you would to a friend who is struggling.",
   daily_functioning: "Break one hard task into a smaller first step you can finish today.",
+  anger_intensity:
+    "When frustration rises, name it quietly: “I feel angry” — without acting on it yet.",
+  anger_triggers:
+    "Write down one situation that often sparks anger so you can spot it earlier next time.",
+  anger_body:
+    "Scan your body once today for heat, jaw tension, or a racing heart when frustration builds.",
+  anger_impulse:
+    "Practice a 10-second pause before you reply the next time tone starts to rise.",
+  anger_recovery:
+    "After a heated moment, take three breaths with a slightly longer exhale to settle.",
+  anger_communication:
+    "Try one “I feel… when… I need…” sentence instead of blaming language.",
+  anger_consequences:
+    "If something was said in anger, plan one small repair step when you feel calmer.",
+  anger_coping:
+    "Pick one coping tool (pause, time-out, or journaling) and use it once this week.",
 };
 
 function asNumber(value: number | string | Array<number | string> | null | undefined): number | null {

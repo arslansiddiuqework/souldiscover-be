@@ -55,23 +55,28 @@ router.put("/", async (req: Request, res: Response) => {
       });
     }
 
+    // Clients cannot self-set paymentStatus/price — server defaults only.
+    const allowedStatus = ["scheduled", "cancelled"].includes(body.status)
+      ? body.status
+      : "scheduled";
+
     const booking = await Consultation.findOneAndUpdate(
-      { userId: req.user!._id, bookingId: body.id },
+      { userId: req.user!._id, bookingId: String(body.id) },
       {
-        bookingId: body.id,
+        bookingId: String(body.id),
         userId: req.user!._id,
         psychologistId: body.psychologistId || "psych_dr_elena",
         psychologistName: body.psychologistName || "Dr. Faya Arslan",
         date: body.date,
         time: body.time,
-        durationMinutes: body.durationMinutes || 90,
-        priceUsd: body.priceUsd ?? 10,
-        status: body.status || "scheduled",
-        clientName: body.clientName,
-        clientEmail: body.clientEmail,
-        reason: body.reason || "",
-        notes: body.notes,
-        paymentStatus: body.paymentStatus || "placeholder",
+        durationMinutes: Number(body.durationMinutes) || 90,
+        priceUsd: 10,
+        status: allowedStatus,
+        clientName: String(body.clientName).slice(0, 120),
+        clientEmail: String(body.clientEmail).slice(0, 254),
+        reason: String(body.reason || "").slice(0, 2000),
+        notes: body.notes != null ? String(body.notes).slice(0, 4000) : undefined,
+        paymentStatus: "placeholder",
       },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );

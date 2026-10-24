@@ -9,6 +9,9 @@ import { Types }             from "mongoose";
 import { EmergencyContact }  from "../models/EmergencyContact";
 import { EscalationLog }     from "../models/EscalationLog";
 import { logger }            from "../utils/logger";
+import { sendTestEmergencySms } from "../services/sms/emergency-sms.service";
+import { isSmsProviderConfigured, isVoiceEscalationAvailable } from "../services/sms/sms.factory";
+import { normalizeE164, redactPhone } from "../utils/phone";
 
 // Get emergency contacts for user
 export const getEmergencyContacts = async (req: Request, res: Response) => {
@@ -132,21 +135,69 @@ export const deleteEmergencyContact = async (req: Request, res: Response) => {
 export const acceptConsent = async (req: Request, res: Response) => {
   try {
     const userId = req.user._id;
+    const acceptedAt = new Date();
 
-    const record = await EmergencyContact.findOneAndUpdate(
-      { userId },
-      {
-        $set: {
-          consentAccepted:   true,
-          consentAcceptedAt: new Date(),
+    let record =
+      (await EmergencyContact.findOneAndUpdate(
+        { userId },
+        {
+          $set: {
+            consentAccepted: true,
+            consentAcceptedAt: acceptedAt,
+          },
+          $setOnInsert: {
+            contacts: [],
+          },
         },
-      },
-      { upsert: true, new: true }
-    );
+        { upsert: true, new: true, runValidators: true }
+      )) ||
+      (await EmergencyContact.findOneAndUpdate(
+        { userId },
+        {
+          $set: {
+            consentAccepted: true,
+            consentAcceptedAt: acceptedAt,
+          },
+        },
+        { new: true }
+      ));
+
+    if (!record) {
+      return res.status(500).json({ message: "Failed to save consent" });
+    }
 
     logger.info("Emergency consent accepted", { userId: userId.toString() });
-    res.json({ message: "Consent accepted", consentAccepted: true, consentAcceptedAt: record.consentAcceptedAt });
-  } catch (err) {
+    res.json({
+      message: "Consent accepted",
+      consentAccepted: true,
+      consentAcceptedAt: record.consentAcceptedAt,
+    });
+  } catch (err: any) {
+    // Duplicate key on concurrent upsert — retry as update.
+    if (err?.code === 11000) {
+      try {
+        const userId = req.user._id;
+        const record = await EmergencyContact.findOneAndUpdate(
+          { userId },
+          {
+            $set: {
+              consentAccepted: true,
+              consentAcceptedAt: new Date(),
+            },
+          },
+          { new: true }
+        );
+        if (record) {
+          return res.json({
+            message: "Consent accepted",
+            consentAccepted: true,
+            consentAcceptedAt: record.consentAcceptedAt,
+          });
+        }
+      } catch (retryErr) {
+        logger.error("acceptConsent retry error", { error: String(retryErr) });
+      }
+    }
     logger.error("acceptConsent error", { error: String(err) });
     res.status(500).json({ message: "Failed to save consent" });
   }
@@ -213,62 +264,98 @@ export const getEscalationStatus = async (req: Request, res: Response) => {
     res.status(500).json({ message: "Failed to get escalation status" });
   }
 };
-// Manual trigger for testing the Twilio pipeline
+/**
+ * Manual connectivity test — sends a TextBee SMS (not a voice call).
+ * Route path `/test-call` kept for API compatibility; response is SMS-oriented.
+ */
 export const triggerTestCall = async (req: Request, res: Response) => {
   try {
     const userId = req.user._id;
     const { contactId } = req.body;
 
+    if (!isSmsProviderConfigured()) {
+      return res.status(503).json({
+        message:
+          "SMS provider is not configured. Set TEXTBEE_API_KEY on the backend.",
+        voiceStatus: "VOICE_UNAVAILABLE",
+        smsConfigured: false,
+      });
+    }
+
     const record = await EmergencyContact.findOne({ userId });
-    if (!record) return res.status(404).json({ message: "No emergency contacts configured." });
+    if (!record) {
+      return res.status(404).json({ message: "No emergency contacts configured." });
+    }
 
     let contact;
     if (contactId) {
       contact = (record.contacts as Types.DocumentArray<any>).id(contactId);
-      if (!contact) return res.status(404).json({ message: "Requested contact not found." });
+      if (!contact) {
+        return res.status(404).json({ message: "Requested contact not found." });
+      }
     } else {
-      contact = record.contacts.find(c => c.enabled);
-      if (!contact) return res.status(404).json({ message: "No enabled contact available for testing." });
+      contact = record.contacts.find((c) => c.enabled);
+      if (!contact) {
+        return res
+          .status(404)
+          .json({ message: "No enabled contact available for testing." });
+      }
     }
 
-    if (!contact.phone) {
-      return res.status(400).json({ message: `Contact '${contact.name}' is missing a valid phone number.` });
+    const phone =
+      normalizeE164(contact.phone) ||
+      normalizeE164((contact as any).whatsappNumber);
+    if (!phone) {
+      return res.status(400).json({
+        message: `Contact '${contact.name}' needs a valid E.164 phone number.`,
+      });
     }
 
-    const { initiateEmergencyCall } = require("../services/twilio/twilio-call.service");
-    
-    logger.info("[DEBUG] Triggering manual test call", { userId, contact: contact.name });
-
-    const result = await initiateEmergencyCall({
+    logger.info("[DEBUG] Triggering manual test SMS", {
       userId,
-      sessionId: "test-session-" + Date.now(),
-      userName: req.user.name || "Test User",
-      assessment: {
-        riskLevel: "HIGH",
-        crisisRiskScore: 0.85,
-        suicideRisk: 0.1,
-        selfHarmRisk: 0.1,
-        panicSeverity: 0.5,
-        escalationRecommended: true,
-        escalationReason: "Manual Test Trigger",
-        confidence: 1.0
-      },
-      emotionalSummary: "This is a manually triggered test call to verify Twilio connectivity.",
-      triggeringStatements: ["TEST CALL TRIGGERED"],
-      recommendedAction: "Please verify you received this call and the audio is clear."
-    }, {
-      name: contact.name,
-      phone: contact.phone,
-      relationship: contact.relationship
+      contact: contact.name,
+      to: redactPhone(phone),
+      voiceAvailable: isVoiceEscalationAvailable(),
     });
 
-    if (result.success) {
-      res.json({ message: `Call initiated successfully to ${contact.name} (${contact.phone})`, callSid: result.callSid });
-    } else {
-      res.status(500).json({ message: `Call failed to initiate. Reason: ${result.error || 'Unknown Twilio Error'}` });
+    const result = await sendTestEmergencySms(
+      {
+        name: contact.name,
+        phone,
+        relationship: contact.relationship,
+      },
+      req.user.name || "Test User"
+    );
+
+    if (result.ok) {
+      // Acceptance = queued, not carrier delivery
+      return res.json({
+        message: `Test SMS accepted by TextBee and queued for ${contact.name} (${redactPhone(phone)}). Delivery depends on the registered Android device being online.`,
+        smsBatchId: result.smsBatchId,
+        deliveryStatus: result.status,
+        voiceStatus: "VOICE_UNAVAILABLE",
+        provider: result.provider,
+      });
     }
+
+    const status =
+      result.code === "http_401"
+        ? 401
+        : result.code === "http_429"
+          ? 429
+          : result.code === "invalid_number" || result.code === "invalid_message"
+            ? 400
+            : 502;
+
+    return res.status(status).json({
+      message: `Test SMS failed: ${result.error}`,
+      code: result.code,
+      voiceStatus: "VOICE_UNAVAILABLE",
+    });
   } catch (err: any) {
     logger.error("triggerTestCall error", { error: String(err) });
-    res.status(500).json({ message: `Internal server error during test call: ${err.message}` });
+    res.status(500).json({
+      message: `Internal server error during test SMS: ${err.message}`,
+    });
   }
 };

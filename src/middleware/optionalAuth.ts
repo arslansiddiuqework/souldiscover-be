@@ -1,13 +1,10 @@
 import { Request, Response, NextFunction } from "express";
-import jwt from "jsonwebtoken";
 import { User } from "../models/User";
-
-interface JwtPayload {
-  userId: string;
-}
+import { verifyUserAccessToken } from "../utils/jwt";
 
 /**
- * Attaches req.user when a valid token is present; otherwise continues as guest.
+ * Attaches req.user when a valid access token is present; otherwise continues as guest.
+ * Password-reset tokens are ignored (treated as guest).
  */
 export const optionalAuth = async (
   req: Request,
@@ -15,15 +12,18 @@ export const optionalAuth = async (
   next: NextFunction
 ) => {
   try {
-    const token = req.header("Authorization")?.replace("Bearer ", "");
+    const header = req.header("Authorization") || "";
+    const token = header.startsWith("Bearer ")
+      ? header.slice(7).trim()
+      : header.trim();
     if (!token) return next();
 
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET || "your-secret-key"
-    ) as JwtPayload;
+    const decoded = verifyUserAccessToken(token);
     const user = await User.findById(decoded.userId);
     if (!user || user.status === "suspended") return next();
+
+    const currentVersion = user.tokenVersion ?? 0;
+    if ((decoded.tv ?? 0) !== currentVersion) return next();
 
     req.user = {
       _id: user._id as any,

@@ -39,7 +39,7 @@ export function getRecentMessages(
  * Converts an array of messages into a formatted string
  * suitable for injection into the prompt.
  */
-export function formatMessagesForPrompt(messages: SimpleMessage[], aiName: string = "Maya"): string {
+export function formatMessagesForPrompt(messages: SimpleMessage[], aiName: string = "Soul Discovery"): string {
   return messages
     .map((msg) => {
       const role = msg.role === "user" ? "User" : aiName;

@@ -17,7 +17,14 @@ import { WellnessPlan } from "../../models/WellnessPlan";
 import { Consultation } from "../../models/Consultation";
 import { AssessmentResult } from "../../models/AssessmentResult";
 import { AssessmentSession } from "../../models/AssessmentSession";
+import { AiUsageCounter } from "../../models/AiUsageCounter";
 import { adminAuth, requirePermission } from "../../middleware/adminAuth";
+import {
+  GLOBAL_MONTHLY_LIMIT,
+  getGlobalDailyLimit,
+  utcDayKey,
+  utcMonthKey,
+} from "../../services/aiQuota.service";
 import { logger } from "../../utils/logger";
 
 const router = Router();
@@ -375,6 +382,46 @@ router.get("/", requirePermission("analytics.read"), async (req: Request, res: R
           count: row.count,
         })),
       },
+      aiUsage: await (async () => {
+        const dayKey = utcDayKey();
+        const monthKey = utcMonthKey();
+        const dailyLimit = getGlobalDailyLimit();
+        const [dayDoc, monthDoc, messageSources] = await Promise.all([
+          AiUsageCounter.findOne({ scope: "global_day", periodKey: dayKey }).lean(),
+          AiUsageCounter.findOne({
+            scope: "global_month",
+            periodKey: monthKey,
+          }).lean(),
+          ChatSession.aggregate([
+            {
+              $match: {
+                startTime: { $gte: sevenDaysAgo },
+                "messages.0": { $exists: true },
+              },
+            },
+            { $unwind: "$messages" },
+            {
+              $group: {
+                _id: { $ifNull: ["$messages.metadata.source", "text"] },
+                count: { $sum: 1 },
+              },
+            },
+            { $sort: { count: -1 } },
+          ]),
+        ]);
+        return {
+          dayKey,
+          monthKey,
+          globalDay: dayDoc?.count || 0,
+          globalMonth: monthDoc?.count || 0,
+          dailyLimit,
+          monthlyLimit: GLOBAL_MONTHLY_LIMIT,
+          messageSources: messageSources.map((s) => ({
+            source: s._id || "text",
+            count: s.count,
+          })),
+        };
+      })(),
     });
   } catch (error) {
     logger.error("[ADMIN_ANALYTICS] Analytics error", { error: String(error) });

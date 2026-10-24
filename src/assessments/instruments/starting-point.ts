@@ -130,8 +130,8 @@ const ROUTING: Record<
     tip: "Short reflections and calm wellness activities can help you explore worry gently.",
   },
   stressed: {
-    assessments: ["stress-check-in", "daily-wellbeing-reflection"],
-    tip: "Naming what feels overwhelming is a useful first step toward practical support.",
+    assessments: ["stress-check-in", "anger-management", "daily-wellbeing-reflection"],
+    tip: "Naming what feels overwhelming — including frustration — is a useful first step toward practical support.",
   },
   focus: {
     assessments: ["daily-wellbeing-reflection", "stress-check-in"],

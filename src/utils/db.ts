@@ -32,6 +32,9 @@ export const connectDB = async (): Promise<typeof mongoose> => {
     return cache.conn;
   }
 
+  // Reject client-supplied Mongo operators in filters (ASVS / NoSQL injection defense).
+  mongoose.set("sanitizeFilter", true);
+
   if (!cache.promise) {
     cache.promise = mongoose
       .connect(MONGODB_URI, {

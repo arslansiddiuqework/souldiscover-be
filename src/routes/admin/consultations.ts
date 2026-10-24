@@ -7,7 +7,11 @@ import { Router, Request, Response } from "express";
 import mongoose from "mongoose";
 import { Consultation } from "../../models/Consultation";
 import { User } from "../../models/User";
-import { adminAuth, requirePermission } from "../../middleware/adminAuth";
+import {
+  adminAuth,
+  requirePermission,
+  requireAnyPermission,
+} from "../../middleware/adminAuth";
 import { logger } from "../../utils/logger";
 
 const router = Router();
@@ -138,7 +142,11 @@ router.get("/:id", requirePermission("users.read"), async (req: Request, res: Re
   }
 });
 
-router.patch("/:id/status", requirePermission("users.block"), async (req: Request, res: Response) => {
+router.patch(
+  "/:id/status",
+  // consultations.write preferred; users.block kept during permission migration
+  requireAnyPermission("consultations.write", "users.block"),
+  async (req: Request, res: Response) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(400).json({ message: "Invalid booking ID" });
@@ -159,6 +167,19 @@ router.patch("/:id/status", requirePermission("users.block"), async (req: Reques
       bookingId: req.params.id,
       status,
       adminId: String(req.admin!._id),
+    });
+
+    const { recordSecurityEvent } = await import("../../services/securityAudit.service");
+    recordSecurityEvent({
+      category: "ADMIN",
+      severity: "INFO",
+      action: "consultation_status_updated",
+      description: `Consultation status set to ${status}.`,
+      actorType: "admin",
+      actorId: req.admin!._id,
+      email: req.admin!.email,
+      req,
+      meta: { bookingId: req.params.id, status },
     });
 
     res.json({ consultation: booking, message: "Status updated" });

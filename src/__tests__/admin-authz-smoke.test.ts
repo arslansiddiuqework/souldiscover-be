@@ -45,6 +45,9 @@ async function main() {
     "/consultations",
     "/assessments",
     "/emergency/status",
+    "/ai-usage",
+    "/engagement",
+    "/security/overview",
   ];
 
   for (const path of protectedGets) {

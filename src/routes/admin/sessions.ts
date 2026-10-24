@@ -188,7 +188,31 @@ router.patch("/:id/status", requirePermission("sessions.write"), async (req: Req
     if (!session) return res.status(404).json({ message: "Session not found" });
 
     logger.info(`[ADMIN_SESSIONS] Session ${session.sessionId} status updated to ${status} by admin`);
-    res.json({ message: "Session status updated successfully", session });
+
+    const { recordSecurityEvent } = await import("../../services/securityAudit.service");
+    recordSecurityEvent({
+      category: "ADMIN",
+      severity: "INFO",
+      action: "session_status_updated",
+      description: `Session status set to ${status}.`,
+      actorType: "admin",
+      actorId: req.admin!._id,
+      email: req.admin!.email,
+      req,
+      meta: { sessionId: session.sessionId, status },
+    });
+
+    // Never return full message transcript on status mutation
+    res.json({
+      message: "Session status updated successfully",
+      session: {
+        sessionId: session.sessionId,
+        status: session.status,
+        title: session.title,
+        startTime: session.startTime,
+        messageCount: session.messages?.length || 0,
+      },
+    });
   } catch (error) {
     logger.error("[ADMIN_SESSIONS] Update session status error", { error: String(error) });
     res.status(500).json({ message: "Failed to update session status" });

@@ -1,29 +1,26 @@
 import { Router } from "express";
-import { register, login, logout, forgotPassword, resetPassword, googleAuth } from "../controllers/auth";
+import {
+  register,
+  login,
+  logout,
+  forgotPassword,
+  resetPassword,
+  googleAuth,
+} from "../controllers/auth";
 import { auth } from "../middleware/auth";
+import {
+  authRateLimit,
+  passwordResetRateLimit,
+} from "../middleware/rateLimit";
 
 const router = Router();
 
-// POST /auth/register
-router.post("/register", register);
-
-// POST /auth/login
-router.post("/login", login);
-
-// POST /auth/logout
+router.post("/register", authRateLimit, register);
+router.post("/login", authRateLimit, login);
 router.post("/logout", auth, logout);
-
-// POST /auth/google
-router.post("/google", googleAuth);
-
-// POST /auth/forgot-password
-router.post("/forgot-password", forgotPassword);
-
-// POST /auth/reset-password
-router.post("/reset-password", resetPassword);
-
-
-// GET /auth/me
+router.post("/google", authRateLimit, googleAuth);
+router.post("/forgot-password", passwordResetRateLimit, forgotPassword);
+router.post("/reset-password", passwordResetRateLimit, resetPassword);
 router.get("/me", auth, (req, res) => {
   res.json({ user: req.user });
 });

@@ -1,14 +1,15 @@
 /**
  * Admin Logs Routes
  * ─────────────────
- * Returns escalation logs as the system activity feed.
- * These are real audit logs from the EscalationLog collection.
+ * Real audit feed: EscalationLog (CRISIS) + SecurityAuditEvent (AUTH/SECURITY/SYSTEM/ADMIN).
+ * No synthetic / fabricated rows.
  *
  * GET /api/admin/logs — Paginated system logs
  */
 
 import { Router, Request, Response } from "express";
 import { EscalationLog } from "../../models/EscalationLog";
+import { SecurityAuditEvent } from "../../models/SecurityAuditEvent";
 import { User } from "../../models/User";
 import { adminAuth, requirePermission } from "../../middleware/adminAuth";
 import { logger } from "../../utils/logger";
@@ -16,134 +17,121 @@ import { logger } from "../../utils/logger";
 const router = Router();
 router.use(adminAuth);
 
-// ── GET / — System logs ───────────────────────────────────────────────────────
+type UiSeverity = "INFO" | "WARNING" | "CRITICAL";
+
 router.get("/", requirePermission("logs.read"), async (req: Request, res: Response) => {
   try {
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 20;
-    const category = (req.query.category as string) || "ALL";
-    const severity = (req.query.severity as string) || "ALL";
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 20));
+    const category = ((req.query.category as string) || "ALL").toUpperCase();
+    const severity = ((req.query.severity as string) || "ALL").toUpperCase();
     const skip = (page - 1) * limit;
 
-    const filter: Record<string, any> = {};
+    const wantCrisis = category === "ALL" || category === "CRISIS";
+    const wantAudit =
+      category === "ALL" ||
+      category === "AUTH" ||
+      category === "SECURITY" ||
+      category === "SYSTEM" ||
+      category === "ADMIN";
 
-    // ── Synthetic Data for Missing Categories ──
-    const generateSyntheticLogs = (cat: string, sev: string) => {
-      const mockLogs = [];
-      const now = new Date();
-      
-      if (cat === "AUTH" || cat === "ALL") {
-        if (sev === "ALL" || sev === "INFO") {
-          mockLogs.push({
-            _id: "mock-auth-1", timestamp: new Date(now.getTime() - 1000 * 60 * 30),
-            category: "AUTH", severity: "INFO",
-            description: "Super Admin successfully authenticated.", operator: "System",
-          });
-        }
-        if (sev === "ALL" || sev === "WARNING") {
-          mockLogs.push({
-            _id: "mock-auth-2", timestamp: new Date(now.getTime() - 1000 * 60 * 60 * 2),
-            category: "AUTH", severity: "WARNING",
-            description: "Failed login attempt from unrecognized IP address.", operator: "System",
-          });
-        }
-      }
-
-      if (cat === "SECURITY" || cat === "ALL") {
-        if (sev === "ALL" || sev === "WARNING") {
-          mockLogs.push({
-            _id: "mock-sec-1", timestamp: new Date(now.getTime() - 1000 * 60 * 60 * 5),
-            category: "SECURITY", severity: "WARNING",
-            description: "API Rate limit exceeded on /api/chat endpoints.", operator: "System",
-          });
-        }
-        if (sev === "ALL" || sev === "CRITICAL") {
-           mockLogs.push({
-            _id: "mock-sec-2", timestamp: new Date(now.getTime() - 1000 * 60 * 60 * 24 * 2),
-            category: "SECURITY", severity: "CRITICAL",
-            description: "Unauthorized access attempt to admin configuration.", operator: "System",
-          });
-        }
-      }
-
-      if (cat === "SYSTEM" || cat === "ALL") {
-         if (sev === "ALL" || sev === "INFO") {
-          mockLogs.push({
-            _id: "mock-sys-1", timestamp: new Date(now.getTime() - 1000 * 60 * 60 * 24),
-            category: "SYSTEM", severity: "INFO",
-            description: "Emergency dispatch threshold updated from 5 to 3.", operator: "Super Admin",
-          });
-        }
-      }
-      return mockLogs;
-    };
-
-    let enrichedLogs: any[] = [];
-    let total = 0;
-
-    if (category === "ALL" || category === "CRISIS") {
-      // Determine the baseline risk levels we want for "CRISIS" logs
+    const crisisFilter: Record<string, unknown> = {};
+    if (wantCrisis) {
       let allowedRiskLevels = ["MEDIUM", "HIGH", "CRITICAL"];
-
-      // Apply severity filter
-      if (severity === "CRITICAL") {
-        allowedRiskLevels = ["CRITICAL"];
-      } else if (severity === "WARNING") {
-        allowedRiskLevels = ["HIGH"];
-      } else if (severity === "INFO") {
-        allowedRiskLevels = ["LOW", "MEDIUM"];
-      }
-
-      filter.riskLevel = { $in: allowedRiskLevels };
-
-      const [realLogs, realTotal] = await Promise.all([
-        EscalationLog.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
-        EscalationLog.countDocuments(filter),
-      ]);
-
-      const mappedLogs = await Promise.all(
-        realLogs.map(async (log) => {
-          const user = await User.findById(log.userId).select("name profileImage");
-
-          // Map to the UI's expected log format
-          let mappedSev: "INFO" | "WARNING" | "CRITICAL" = "INFO";
-          if (log.riskLevel === "CRITICAL") mappedSev = "CRITICAL";
-          else if (log.riskLevel === "HIGH") mappedSev = "WARNING";
-
-          return {
-            _id: log._id,
-            timestamp: log.createdAt,
-            category: "CRISIS" as const,
-            severity: mappedSev,
-            description: `${log.riskLevel} risk escalation for ${user?.name || "Unknown"} — ${log.outcome} (${log.escalationReason || "N/A"})`,
-            operator: log.contactCalled || "System",
-            riskLevel: log.riskLevel,
-            outcome: log.outcome,
-            userId: log.userId,
-            sessionId: log.sessionId,
-            userProfileImage: user?.profileImage || "",
-          };
-        })
-      );
-      
-      enrichedLogs = [...mappedLogs];
-      total = realTotal;
+      if (severity === "CRITICAL") allowedRiskLevels = ["CRITICAL"];
+      else if (severity === "WARNING") allowedRiskLevels = ["HIGH"];
+      else if (severity === "INFO") allowedRiskLevels = ["LOW", "MEDIUM"];
+      crisisFilter.riskLevel = { $in: allowedRiskLevels };
     }
 
-    // Append synthetic logs and sort
-    const syntheticLogs = generateSyntheticLogs(category, severity);
-    enrichedLogs = [...enrichedLogs, ...syntheticLogs].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-    
-    // Update total with synthetic count
-    total += syntheticLogs.length;
+    const auditFilter: Record<string, unknown> = {};
+    if (wantAudit) {
+      if (category !== "ALL") {
+        auditFilter.category = category;
+      } else {
+        auditFilter.category = { $in: ["AUTH", "SECURITY", "SYSTEM", "ADMIN"] };
+      }
+      if (severity !== "ALL") {
+        auditFilter.severity = severity;
+      }
+    }
+
+    const fetchLimit = skip + limit;
+
+    const [crisisLogs, crisisTotal, auditLogs, auditTotal] = await Promise.all([
+      wantCrisis
+        ? EscalationLog.find(crisisFilter).sort({ createdAt: -1 }).limit(fetchLimit)
+        : Promise.resolve([]),
+      wantCrisis ? EscalationLog.countDocuments(crisisFilter) : Promise.resolve(0),
+      wantAudit
+        ? SecurityAuditEvent.find(auditFilter).sort({ createdAt: -1 }).limit(fetchLimit)
+        : Promise.resolve([]),
+      wantAudit ? SecurityAuditEvent.countDocuments(auditFilter) : Promise.resolve(0),
+    ]);
+
+    const crisisUserIds = crisisLogs.map((l) => l.userId).filter(Boolean);
+    const users = crisisUserIds.length
+      ? await User.find({ _id: { $in: crisisUserIds } })
+          .select("name profileImage")
+          .lean()
+      : [];
+    const userMap = new Map(users.map((u) => [String(u._id), u]));
+
+    const mappedCrisis = crisisLogs.map((log) => {
+      const user = userMap.get(String(log.userId));
+      let mappedSev: UiSeverity = "INFO";
+      if (log.riskLevel === "CRITICAL") mappedSev = "CRITICAL";
+      else if (log.riskLevel === "HIGH") mappedSev = "WARNING";
+
+      return {
+        _id: String(log._id),
+        timestamp: log.createdAt,
+        category: "CRISIS" as const,
+        severity: mappedSev,
+        description: `${log.riskLevel} risk escalation for ${user?.name || "Unknown"} — ${log.outcome} (${log.escalationReason || "N/A"})`,
+        operator: log.contactCalled || "System",
+        riskLevel: log.riskLevel,
+        outcome: log.outcome,
+        userId: log.userId ? String(log.userId) : undefined,
+        sessionId: log.sessionId,
+        userProfileImage: user?.profileImage || "",
+        action: "escalation",
+      };
+    });
+
+    const mappedAudit = auditLogs.map((ev) => ({
+      _id: String(ev._id),
+      timestamp: ev.createdAt,
+      category: ev.category,
+      severity: ev.severity as UiSeverity,
+      description: ev.description,
+      operator:
+        ev.actorType === "admin"
+          ? "Admin"
+          : ev.actorType === "user"
+          ? "User"
+          : "System",
+      userId: ev.actorId ? String(ev.actorId) : undefined,
+      action: ev.action,
+      email: ev.email,
+      ip: ev.ip,
+    }));
+
+    const merged = [...mappedCrisis, ...mappedAudit].sort(
+      (a, b) =>
+        new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    );
+
+    const pageSlice = merged.slice(skip, skip + limit);
+    const total = crisisTotal + auditTotal;
 
     res.json({
-      logs: enrichedLogs,
+      logs: pageSlice,
       pagination: {
         total,
         page,
         limit,
-        totalPages: Math.ceil(total / limit),
+        totalPages: Math.max(1, Math.ceil(total / limit)),
       },
     });
   } catch (error) {

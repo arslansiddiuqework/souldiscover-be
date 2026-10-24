@@ -1,15 +1,14 @@
 import { logger } from "../utils/logger";
-import { generateStream } from "./llm.service";
+import { generateStream, LLMResult } from "./llm.service";
 
-// Router Result
 export interface RouterResult {
   fullText: string;
-  modelUsed: "groq";
+  modelUsed: string;
   fallbackUsed: boolean;
   error?: boolean;
+  errorCode?: LLMResult["errorCode"];
 }
 
-// Main Router
 export async function routedGenerateStream(
   prompt: string,
   onChunk: (text: string) => void,
@@ -19,7 +18,7 @@ export async function routedGenerateStream(
   } = {},
   signal?: AbortSignal
 ): Promise<RouterResult> {
-  logger.info("🚀 Router: delegating to LLM Service");
+  logger.info("Router: delegating to OpenRouter free LLM");
 
   const result = await generateStream(
     prompt,
@@ -33,8 +32,9 @@ export async function routedGenerateStream(
 
   return {
     fullText: result.fullText,
-    modelUsed: result.modelUsed as "groq",
+    modelUsed: result.modelUsed,
     fallbackUsed: result.fallbackUsed,
-    error: result.error
+    error: result.error,
+    errorCode: result.errorCode,
   };
 }

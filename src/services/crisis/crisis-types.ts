@@ -27,7 +27,9 @@ export interface EscalationDecision {
     | "low_confidence"
     | "no_contacts"
     | "max_per_day"
-    | "twilio_not_configured";
+    | "sms_not_configured"
+    | "voice_unavailable"
+    | "twilio_not_configured"; // historical alias retained
 }
 
 export interface CrisisContext {

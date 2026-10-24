@@ -21,7 +21,10 @@ const transporter = nodemailer.createTransport({
 export const sendPasswordResetEmail = async (to: string, resetLink: string) => {
   // If no SMTP user is configured, log a warning and skip sending to avoid crash
   if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
-    logger.warn(`SMTP credentials missing. Would have sent reset email to ${to} with link: ${resetLink}`);
+    // Never log the reset link — it is a bearer secret.
+    logger.warn(
+      `SMTP credentials missing. Password reset email not sent (recipient redacted).`
+    );
     return;
   }
 

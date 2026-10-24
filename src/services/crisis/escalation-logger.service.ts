@@ -52,7 +52,20 @@ export const EscalationLogger = {
     logger.error("[CALL_FAILED]", stamp(payload));
   },
 
+  smsQueued(payload: BasePayload & { smsBatchId?: string }) {
+    logger.info("[SMS_QUEUED]", stamp(payload));
+  },
+
+  smsFailed(payload: BasePayload & { error: string; code?: string }) {
+    logger.error("[SMS_FAILED]", stamp(payload));
+  },
+
+  smsNotConfigured(payload: BasePayload) {
+    logger.info("[SMS_NOT_CONFIGURED]", stamp(payload));
+  },
+
+  /** @deprecated Twilio removed — use smsNotConfigured */
   twilioNotConfigured(payload: BasePayload) {
-    logger.info("[TWILIO_NOT_CONFIGURED]", stamp(payload));
+    logger.info("[SMS_NOT_CONFIGURED]", stamp(payload));
   },
 };

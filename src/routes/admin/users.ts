@@ -23,8 +23,15 @@ import { WellnessPlan } from "../../models/WellnessPlan";
 import { Consultation } from "../../models/Consultation";
 import { AssessmentResult } from "../../models/AssessmentResult";
 import { AssessmentSession } from "../../models/AssessmentSession";
+import { AiUsageCounter } from "../../models/AiUsageCounter";
 import { adminAuth, requirePermission } from "../../middleware/adminAuth";
+import {
+  USER_MONTHLY_LIMIT,
+  utcMonthKey,
+} from "../../services/aiQuota.service";
 import { logger } from "../../utils/logger";
+import { recordSecurityEvent } from "../../services/securityAudit.service";
+import { requireAdminPassword } from "../../middleware/requireAdminPassword";
 
 const router = Router();
 router.use(adminAuth);
@@ -72,6 +79,7 @@ router.get("/", requirePermission("users.read"), async (req: Request, res: Respo
           profileImage: user.profileImage,
           aiName: user.aiName,
           aiBehavior: user.aiBehavior,
+          authProvider: user.authProvider || "local",
           status: user.status || "active",
           createdAt: (user as any).createdAt,
           updatedAt: (user as any).updatedAt,
@@ -130,6 +138,7 @@ router.get("/:id", requirePermission("users.read"), async (req: Request, res: Re
       assessmentCount,
       recentAssessments,
       assessmentInProgress,
+      aiUsageDoc,
     ] = await Promise.all([
       ChatSession.find({ userId: user._id })
         .select("sessionId title startTime status messages")
@@ -165,6 +174,10 @@ router.get("/:id", requirePermission("users.read"), async (req: Request, res: Re
         userId: user._id,
         status: "in_progress",
       }),
+      AiUsageCounter.findOne({
+        scope: "user_month",
+        periodKey: `${user._id}:${utcMonthKey()}`,
+      }).lean(),
     ]);
 
     const sessionsWithCounts = sessions.map((s) => ({
@@ -183,8 +196,15 @@ router.get("/:id", requirePermission("users.read"), async (req: Request, res: Re
         profileImage: user.profileImage,
         aiName: user.aiName,
         aiBehavior: user.aiBehavior,
+        authProvider: user.authProvider || "local",
         status: user.status || "active",
         createdAt: (user as any).createdAt,
+      },
+      aiUsage: {
+        monthKey: utcMonthKey(),
+        count: aiUsageDoc?.count || 0,
+        limit: USER_MONTHLY_LIMIT,
+        remaining: Math.max(0, USER_MONTHLY_LIMIT - (aiUsageDoc?.count || 0)),
       },
       sessions: sessionsWithCounts,
       emergencyContacts: emergencyRecord?.contacts || [],
@@ -274,6 +294,18 @@ router.patch("/:id/status", requirePermission("users.block"), async (req: Reques
       adminId: String(req.admin!._id),
     });
 
+    recordSecurityEvent({
+      category: "ADMIN",
+      severity: status === "suspended" ? "WARNING" : "INFO",
+      action: "user_status_change",
+      description: `Admin set user status to ${status}.`,
+      actorType: "admin",
+      actorId: req.admin!._id,
+      email: user.email,
+      req,
+      meta: { targetUserId: req.params.id, status },
+    });
+
     res.json({ message: "User status updated successfully", user });
   } catch (error) {
     logger.error("[ADMIN_USERS] Update user status error", { error: String(error) });
@@ -281,8 +313,12 @@ router.patch("/:id/status", requirePermission("users.block"), async (req: Reques
   }
 });
 
-// ── DELETE /:id — Delete user ─────────────────────────────────────────────────
-router.delete("/:id", requirePermission("users.delete"), async (req: Request, res: Response) => {
+// ── DELETE /:id — Delete user (requires step-up password) ─────────────────────
+router.delete(
+  "/:id",
+  requirePermission("users.delete"),
+  requireAdminPassword,
+  async (req: Request, res: Response) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(400).json({ message: "Invalid user ID format" });
@@ -304,6 +340,19 @@ router.delete("/:id", requirePermission("users.delete"), async (req: Request, re
     ]);
 
     logger.info("[ADMIN_USERS] User deleted", { userId: req.params.id, adminId: String(req.admin!._id) });
+
+    recordSecurityEvent({
+      category: "ADMIN",
+      severity: "CRITICAL",
+      action: "user_deleted",
+      description: "Admin deleted a user and associated data.",
+      actorType: "admin",
+      actorId: req.admin!._id,
+      email: user.email,
+      req,
+      meta: { targetUserId: req.params.id },
+    });
+
     res.json({ message: "User and associated data deleted successfully" });
   } catch (error) {
     logger.error("[ADMIN_USERS] Delete user error", { error: String(error) });

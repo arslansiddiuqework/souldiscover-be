@@ -16,6 +16,9 @@ import settingsRouter from "./settings";
 import wellnessRouter from "./wellness";
 import consultationsRouter from "./consultations";
 import assessmentsRouter from "./assessments";
+import aiUsageRouter from "./ai-usage";
+import engagementRouter from "./engagement";
+import securityRouter from "./security";
 
 const router = Router();
 
@@ -29,5 +32,8 @@ router.use("/settings", settingsRouter);
 router.use("/wellness", wellnessRouter);
 router.use("/consultations", consultationsRouter);
 router.use("/assessments", assessmentsRouter);
+router.use("/ai-usage", aiUsageRouter);
+router.use("/engagement", engagementRouter);
+router.use("/security", securityRouter);
 
 export default router;

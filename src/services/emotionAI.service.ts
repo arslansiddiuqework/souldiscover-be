@@ -1,7 +1,12 @@
 import { logger } from "../utils/logger";
-import { groq1, groq2 } from "./llm.service";
+import { generate } from "./llm.service";
 
-const MODEL_NAME = "llama-3.1-8b-instant";
+/**
+ * Emotion analysis prefers a fast heuristic so we do not burn scarce
+ * OpenRouter free-model quota (app daily limit aligns with provider free caps).
+ * Optional LLM pass runs only when EMOTION_AI_LLM=true.
+ */
+const USE_EMOTION_LLM = process.env.EMOTION_AI_LLM === "true";
 
 // ── Types ──────────────────────────────────────────────────────
 export interface EmotionAIParams {
@@ -147,53 +152,50 @@ SCHEMA:
 
 IMPORTANT: To avoid repetitive user experiences, you MUST randomize the "suggestedActivity" and "musicRecommendation" fields. Do NOT always suggest "breathing". Rotate through all available activities and music moods appropriately.`;
 
-  const userPrompt = `User Message: "${params.userMessage}"`;
-
-  const keys = [groq1, groq2];
-  
-  for (let i = 0; i < keys.length; i++) {
-    const groq = keys[i];
-    try {
-      const completion = await groq.chat.completions.create({
-        model: MODEL_NAME,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt }
-        ],
-        max_tokens: 150,
-        temperature: 0,
-        response_format: { type: "json_object" }
-      }, { timeout: 2000 });
-
-      const text = completion.choices[0]?.message?.content || "{}";
-      const data = safeJsonParse(text);
-
-      if (!data) throw new Error("Invalid JSON from Groq");
-
-      const finalResult: EmotionAIResult = {
-        emotion: data.emotion || "neutral",
-        intensity: data.intensity || 0.1,
-        suggestedActivity: (data.suggestedActivity === "null" || !data.suggestedActivity) ? null : data.suggestedActivity,
-        autoTrigger: data.autoTrigger || false,
-        crisisRiskScore: Number(data.crisisRiskScore) || 0,
-        suicideRisk: Number(data.suicideRisk) || 0,
-        selfHarmRisk: Number(data.selfHarmRisk) || 0,
-        panicSeverity: Number(data.panicSeverity) || 0,
-        escalationRecommended: !!data.escalationRecommended || (data.riskLevel === "HIGH" || data.riskLevel === "CRITICAL"),
-        escalationReason: data.escalationReason || "Assessment",
-        musicRecommendation: data.musicRecommendation || null,
-      };
-
-      logger.info("🧠 emotionAI: Analysis Complete", { risk: data.riskLevel, score: finalResult.crisisRiskScore });
-      return finalResult;
-      
-    } catch (error) {
-      logger.warn(`⚠️ emotionAI: Groq Key ${i + 1} failed, ${i === 0 ? 'switching...' : 'falling back to heuristic'}`, { 
-        error: error instanceof Error ? error.message : String(error) 
-      });
-    }
+  // Default: heuristic only — preserves OpenRouter free daily quota for chat replies.
+  if (!USE_EMOTION_LLM) {
+    return fallbackAnalysis(params.userMessage, params.latestMood);
   }
 
-  // If both keys fail, use heuristic
-  return fallbackAnalysis(params.userMessage, params.latestMood);
+  const userPrompt = `User Message: "${params.userMessage}"`;
+
+  try {
+    const text = await generate(
+      `${systemPrompt}\n\n${userPrompt}\n\nRespond with JSON only.`,
+      { maxTokens: 150, temperature: 0 }
+    );
+    const data = safeJsonParse(text || "{}");
+    if (!data) throw new Error("Invalid JSON from OpenRouter");
+
+    const finalResult: EmotionAIResult = {
+      emotion: data.emotion || "neutral",
+      intensity: data.intensity || 0.1,
+      suggestedActivity:
+        data.suggestedActivity === "null" || !data.suggestedActivity
+          ? null
+          : data.suggestedActivity,
+      autoTrigger: data.autoTrigger || false,
+      crisisRiskScore: Number(data.crisisRiskScore) || 0,
+      suicideRisk: Number(data.suicideRisk) || 0,
+      selfHarmRisk: Number(data.selfHarmRisk) || 0,
+      panicSeverity: Number(data.panicSeverity) || 0,
+      escalationRecommended:
+        !!data.escalationRecommended ||
+        data.riskLevel === "HIGH" ||
+        data.riskLevel === "CRITICAL",
+      escalationReason: data.escalationReason || "Assessment",
+      musicRecommendation: data.musicRecommendation || null,
+    };
+
+    logger.info("emotionAI: Analysis Complete", {
+      risk: data.riskLevel,
+      score: finalResult.crisisRiskScore,
+    });
+    return finalResult;
+  } catch (error) {
+    logger.warn("emotionAI: LLM failed, using heuristic", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return fallbackAnalysis(params.userMessage, params.latestMood);
+  }
 }

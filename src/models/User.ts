@@ -13,16 +13,21 @@ export interface IUser extends Document {
   status: "active" | "suspended";
   /** First-time website tour dismissed or completed */
   websiteTourCompleted: boolean;
+  /** Incremented on password change to invalidate older access JWTs */
+  tokenVersion: number;
+  /** One-time password-reset JTI (hashed) — cleared after successful reset */
+  passwordResetJtiHash?: string | null;
+  passwordResetExpiresAt?: Date | null;
 }
 
 const UserSchema = new Schema<IUser>(
   {
     name: { type: String, required: true },
-    email: { type: String, required: true, unique: true },
+    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     password: { type: String, required: false },
     authProvider: { type: String, enum: ["local", "google"], default: "local" },
     profileImage: { type: String, default: "" },
-    aiName: { type: String, default: "Maya" },
+    aiName: { type: String, default: "Soul Discovery" },
     aiBehavior: { 
       type: String, 
       enum: ["supportive", "friendly", "motivational", "calm"], 
@@ -39,6 +44,9 @@ const UserSchema = new Schema<IUser>(
       type: Boolean,
       default: false,
     },
+    tokenVersion: { type: Number, default: 0 },
+    passwordResetJtiHash: { type: String, default: null },
+    passwordResetExpiresAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

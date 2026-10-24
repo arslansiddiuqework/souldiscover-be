@@ -1,4 +1,5 @@
 import { AssessmentDefinition } from "./types";
+import { angerManagementReflection } from "./instruments/anger-management";
 import { dailyWellbeingReflection } from "./instruments/daily-wellbeing";
 import { stressCheckIn } from "./instruments/stress-checkin";
 import { sleepCheckIn } from "./instruments/sleep-checkin";
@@ -235,6 +236,7 @@ export const ASSESSMENT_CATALOG: AssessmentDefinition[] = [
   dailyWellbeingReflection,
   stressCheckIn,
   sleepCheckIn,
+  angerManagementReflection,
   ...PENDING,
 ];
 

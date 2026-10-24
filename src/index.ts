@@ -15,7 +15,6 @@ import moodRouter     from "./routes/mood";
 import activityRouter from "./routes/activity";
 import userRouter     from "./routes/user";
 import emergencyRouter from "./routes/emergency";
-import twilioRouter   from "./routes/twilio";
 import adminRouter    from "./routes/admin";
 import progressRouter from "./routes/progress";
 import musicRouter    from "./routes/music";
@@ -31,16 +30,63 @@ const app: any = express();
 const isVercel = Boolean(process.env.VERCEL);
 
 // Middleware
-app.use(helmet()); // Security headers
-app.use(cors({
-  origin: true, // Reflects the origin, allowing any frontend (including vercel branch previews)
-  credentials: true,
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"]
-})); // Enable permissive CORS
-app.use(express.json()); // Parse JSON bodies
-app.use(express.urlencoded({ extended: true })); // Parse URL-encoded bodies (Twilio)
-app.use(morgan("dev")); // HTTP request logger
+app.use(
+  helmet({
+    contentSecurityPolicy: false, // JSON API — CSP is enforced on frontends
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  })
+);
+
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  process.env.ADMIN_FRONTEND_URL,
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "http://localhost:3002",
+  "https://www.souldiscovery.online",
+  "https://souldiscovery.online",
+]
+  .filter(Boolean)
+  .map((o) => String(o).replace(/\/+$/, ""));
+
+const extraOrigins = (process.env.CORS_ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((o) => o.trim().replace(/\/+$/, ""))
+  .filter(Boolean);
+
+const corsAllowlist = new Set([...allowedOrigins, ...extraOrigins]);
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      // Non-browser / same-origin / health checks send no Origin
+      if (!origin) return callback(null, true);
+      if (corsAllowlist.has(origin.replace(/\/+$/, ""))) {
+        return callback(null, true);
+      }
+      // Allow Vercel preview hosts of this project only when explicitly enabled
+      if (
+        process.env.CORS_ALLOW_VERCEL_PREVIEWS === "true" &&
+        /\.vercel\.app$/i.test(new URL(origin).hostname)
+      ) {
+        return callback(null, true);
+      }
+      return callback(new Error(`CORS origin not allowed: ${origin}`));
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "Accept",
+      "Origin",
+      "X-Requested-With",
+    ],
+  })
+);
+app.use(express.json({ limit: "256kb" }));
+app.use(express.urlencoded({ extended: true, limit: "256kb" }));
+app.use(morgan(isVercel || process.env.NODE_ENV === "production" ? "combined" : "dev"));
 
 // Routes
 app.get("/health", (req: Request, res: Response) => {
@@ -59,7 +105,6 @@ app.use("/api/mood", ensureDb, moodRouter);
 app.use("/api/activity", ensureDb, activityRouter);
 app.use("/api/user", ensureDb, userRouter);
 app.use("/api/emergency", ensureDb, emergencyRouter);
-app.use("/api/twilio", ensureDb, twilioRouter);
 app.use("/api/admin", ensureDb, adminRouter);
 app.use("/api/progress", ensureDb, progressRouter);
 app.use("/api/music", ensureDb, musicRouter);

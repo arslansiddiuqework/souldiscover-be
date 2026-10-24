@@ -155,6 +155,72 @@ if (finder) {
     "returns educational tips without clinical risk score"
   );
   assert(routed.totalScore === null, "finder does not invent a clinical score");
+
+  const stressedRoute = scoreAssessment(finder, [
+    { questionId: "explore", value: "stressed" },
+    { questionId: "hope", value: "practical" },
+  ]);
+  assert(
+    (stressedRoute.suggestedAssessmentSlugs || []).includes("anger-management"),
+    "routes stressed explore to anger-management reflection"
+  );
+}
+
+const anger = getAssessmentBySlug("anger-management");
+assert(Boolean(anger), "loads anger-management definition");
+assert(anger?.status === "published", "anger-management is published");
+assert(anger?.clinicallyValidated === false, "anger-management is not clinically validated");
+assert(anger?.version === "1.0.0", "anger-management version is 1.0.0");
+assert(anger?.questions.length === 8, "anger-management has 8 questions");
+assert(anger?.scoringMethod === "reflection_domains", "anger uses reflection_domains");
+
+if (anger) {
+  const elevated = answersFrom({
+    frequency_intensity: 4,
+    triggers: 1,
+    body_signals: 1,
+    impulsive_reactions: 4,
+    recovery_time: 1,
+    communication: 1,
+    consequences: 4,
+    coping_strategies: 1,
+  });
+  const elevatedResult = scoreAssessment(anger, elevated);
+  assert(elevatedResult.totalScore === null, "anger reflection has no clinical total");
+  assert(elevatedResult.needsAttention.length > 0, "flags attention domains for elevated anger");
+  assert(
+    elevatedResult.suggestedPlanSlugs.includes("anger-frustration"),
+    "suggests anger-frustration wellness plan"
+  );
+  assert(
+    elevatedResult.disclaimer.toLowerCase().includes("not been clinically validated"),
+    "includes non-clinical disclaimer"
+  );
+
+  const steadier = answersFrom({
+    frequency_intensity: 1,
+    triggers: 3,
+    body_signals: 3,
+    impulsive_reactions: 1,
+    recovery_time: 3,
+    communication: 3,
+    consequences: 1,
+    coping_strategies: 3,
+  });
+  const steadierResult = scoreAssessment(anger, steadier);
+  assert(steadierResult.goingWell.length > 0, "detects going-well anger domains");
+
+  try {
+    scoreAssessment(anger, [{ questionId: "frequency_intensity", value: 99 }]);
+    assert(false, "invalid anger value throws");
+  } catch {
+    assert(true, "invalid anger value throws");
+  }
+
+  const unknownAnger = validateAnswers(anger, [
+    { questionId: "not-a-question", value: 1 },
+  ]);
+  assert(unknownAnger.ok === false, "rejects unknown anger question ids");
 }
 
 console.log(`\nResults: ${passed} passed, ${failed} failed\n`);

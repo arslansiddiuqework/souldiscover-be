@@ -1,3 +1,8 @@
+/**
+ * Historical Twilio voice/WhatsApp session collection.
+ * Retained for MongoDB compatibility with existing documents.
+ * New escalations use TextBee SMS and do not write TwilioSession rows.
+ */
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface ITwilioSession extends Document {

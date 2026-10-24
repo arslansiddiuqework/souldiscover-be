@@ -73,14 +73,29 @@ export const updateProfile: RequestHandler = async (req, res) => {
       websiteTourCompleted,
     } = req.body;
 
-    const updateData: any = {};
-    if (name) updateData.name = name;
-    if (email) updateData.email = email;
-    if (profileImage !== undefined) updateData.profileImage = profileImage;
-    if (aiName !== undefined) updateData.aiName = aiName;
-    if (aiBehavior !== undefined) updateData.aiBehavior = aiBehavior;
-    if (aiAvatar !== undefined) updateData.aiAvatar = aiAvatar;
-    if (aiVoice !== undefined) updateData.aiVoice = aiVoice;
+    // Explicit allowlist only — never accept role, password, tokenVersion, etc.
+    const updateData: Record<string, unknown> = {};
+    if (typeof name === "string" && name.trim()) {
+      updateData.name = name.trim().slice(0, 120);
+    }
+    if (typeof email === "string" && email.trim()) {
+      updateData.email = email.trim().toLowerCase().slice(0, 254);
+    }
+    if (typeof profileImage === "string") {
+      updateData.profileImage = profileImage.slice(0, 2048);
+    }
+    if (typeof aiName === "string") {
+      updateData.aiName = aiName.slice(0, 80);
+    }
+    if (typeof aiBehavior === "string") {
+      updateData.aiBehavior = aiBehavior.slice(0, 2000);
+    }
+    if (typeof aiAvatar === "string") {
+      updateData.aiAvatar = aiAvatar.slice(0, 2048);
+    }
+    if (typeof aiVoice === "string") {
+      updateData.aiVoice = aiVoice.slice(0, 80);
+    }
     if (typeof websiteTourCompleted === "boolean") {
       updateData.websiteTourCompleted = websiteTourCompleted;
     }
@@ -101,11 +116,7 @@ export const updateProfile: RequestHandler = async (req, res) => {
     });
   } catch (err: any) {
     console.error("ERROR (updateProfile):", err);
-    res.status(500).json({
-      message: "Internal error",
-      error: err.message,
-      stack: process.env.NODE_ENV === "development" ? err.stack : undefined
-    });
+    res.status(500).json({ message: "Internal error" });
   }
 };
 

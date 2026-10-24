@@ -2,7 +2,7 @@
  * Google identity + auth API smoke tests.
  * Run: npx ts-node src/__tests__/google-auth.test.ts
  *
- * Identity tests mock Google userinfo.
+ * Identity tests mock Google tokeninfo + userinfo.
  * HTTP smoke hits local backend when ADMIN/API is up (optional).
  */
 
@@ -28,6 +28,7 @@ async function test(name: string, fn: () => Promise<void> | void) {
 }
 
 const originalFetch = global.fetch;
+const TEST_CLIENT_ID = "test-google-client-id.apps.googleusercontent.com";
 
 async function main() {
   console.log("\nGoogle auth tests\n");
@@ -61,13 +62,36 @@ async function main() {
     }
   });
 
-  await test("access token: rejects invalid Google responses", async () => {
-    global.fetch = (async () =>
-      ({
-        ok: false,
-        status: 401,
-        json: async () => ({}),
-      }) as Response) as typeof fetch;
+  await test("access token: requires GOOGLE_CLIENT_ID", async () => {
+    const prev = process.env.GOOGLE_CLIENT_ID;
+    delete process.env.GOOGLE_CLIENT_ID;
+    try {
+      await resolveGoogleProfile("ya29.no-client-id");
+      assert.fail("expected throw");
+    } catch (err) {
+      assert.match(
+        err instanceof Error ? err.message : "",
+        /GOOGLE_CLIENT_ID/i
+      );
+    } finally {
+      if (prev !== undefined) process.env.GOOGLE_CLIENT_ID = prev;
+    }
+  });
+
+  await test("access token: rejects invalid Google tokeninfo", async () => {
+    process.env.GOOGLE_CLIENT_ID = TEST_CLIENT_ID;
+    global.fetch = (async (input: any) => {
+      const url = String(input);
+      if (url.includes("tokeninfo")) {
+        return {
+          ok: false,
+          status: 401,
+          json: async () => ({}),
+        } as Response;
+      }
+      assert.fail(`unexpected fetch: ${url}`);
+      return {} as Response;
+    }) as typeof fetch;
 
     try {
       await resolveGoogleProfile("ya29.invalid");
@@ -80,9 +104,48 @@ async function main() {
     }
   });
 
-  await test("access token: maps Google userinfo to profile", async () => {
+  await test("access token: rejects audience mismatch", async () => {
+    process.env.GOOGLE_CLIENT_ID = TEST_CLIENT_ID;
     global.fetch = (async (input: any) => {
-      assert.match(String(input), /oauth2\/v3\/userinfo/);
+      const url = String(input);
+      if (url.includes("tokeninfo")) {
+        return {
+          ok: true,
+          json: async () => ({
+            aud: "other-app.apps.googleusercontent.com",
+            exp: String(Math.floor(Date.now() / 1000) + 3600),
+          }),
+        } as Response;
+      }
+      assert.fail(`unexpected fetch: ${url}`);
+      return {} as Response;
+    }) as typeof fetch;
+
+    try {
+      await resolveGoogleProfile("ya29.wrong-aud");
+      assert.fail("expected throw");
+    } catch (err) {
+      assert.match(
+        err instanceof Error ? err.message : "",
+        /audience mismatch/i
+      );
+    }
+  });
+
+  await test("access token: maps verified tokeninfo + userinfo to profile", async () => {
+    process.env.GOOGLE_CLIENT_ID = TEST_CLIENT_ID;
+    global.fetch = (async (input: any) => {
+      const url = String(input);
+      if (url.includes("tokeninfo")) {
+        return {
+          ok: true,
+          json: async () => ({
+            aud: TEST_CLIENT_ID,
+            exp: String(Math.floor(Date.now() / 1000) + 3600),
+          }),
+        } as Response;
+      }
+      assert.match(url, /oauth2\/v3\/userinfo/);
       return {
         ok: true,
         json: async () => ({
@@ -101,12 +164,24 @@ async function main() {
     assert.strictEqual(profile.emailVerified, true);
   });
 
-  await test("access token: requires email in payload", async () => {
-    global.fetch = (async () =>
-      ({
+  await test("access token: requires email in userinfo payload", async () => {
+    process.env.GOOGLE_CLIENT_ID = TEST_CLIENT_ID;
+    global.fetch = (async (input: any) => {
+      const url = String(input);
+      if (url.includes("tokeninfo")) {
+        return {
+          ok: true,
+          json: async () => ({
+            aud: TEST_CLIENT_ID,
+            exp: String(Math.floor(Date.now() / 1000) + 3600),
+          }),
+        } as Response;
+      }
+      return {
         ok: true,
-        json: async () => ({ name: "No Email" }),
-      }) as Response) as typeof fetch;
+        json: async () => ({ name: "No Email", email_verified: true }),
+      } as Response;
+    }) as typeof fetch;
 
     try {
       await resolveGoogleProfile("ya29.no-email");
@@ -174,7 +249,7 @@ async function main() {
       assert.strictEqual(bad.status, 400);
       assert.match(
         String(bad.body.message || ""),
-        /invalid google access token/i
+        /invalid google access token|google|credential/i
       );
     });
 

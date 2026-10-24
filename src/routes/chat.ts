@@ -8,6 +8,7 @@ import {
   deleteChatSession,
 } from "../controllers/chat";
 import { auth } from "../middleware/auth";
+import { chatRateLimit } from "../middleware/rateLimit";
 
 const router = express.Router();
 
@@ -26,13 +27,10 @@ router.get("/sessions/:sessionId", getChatSession);
 // Delete a specific chat session
 router.delete("/sessions/:sessionId", deleteChatSession);
 
-// Send a message in a chat session
-router.post("/sessions/:sessionId/messages", sendMessage);
+// Send a message in a chat session (expensive AI path — rate limited)
+router.post("/sessions/:sessionId/messages", chatRateLimit, sendMessage);
 
 // Get chat history for a session
 router.get("/sessions/:sessionId/history", getChatHistory);
 
 export default router;
-
-// let response = pm.response.json()
-// pm.globals.set("access_token", response.access_token)
